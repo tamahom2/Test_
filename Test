@@ -1,0 +1,595 @@
+import numpy as np
+from itertools import product
+import time
+from functools import lru_cache
+
+class ChebyshevInterpolation:
+    """
+    Implementation of Algorithm 4: Combined methodology for Chebyshev interpolation 
+    in parametric option pricing.
+    
+    From the paper "Low-rank tensor approximation for Chebyshev interpolation in 
+    parametric option pricing" by Glau, Kressner, and Statti.
+    """
+    
+    def __init__(self, domains, degrees):
+        """
+        Initialize the Chebyshev interpolation.
+        
+        Parameters:
+        -----------
+        domains : list of tuples
+            List of (min, max) tuples defining the domain in each dimension.
+        degrees : list of int
+            List of degrees for Chebyshev polynomials in each dimension.
+        """
+        self.domains = domains
+        self.degrees = degrees
+        self.dims = len(domains)
+        
+        # Tensors for coefficients and prices
+        self.P = None  # Tensor of prices at Chebyshev nodes
+        self.C = None  # Tensor of Chebyshev coefficients
+        
+        # TT decomposition information
+        self.tt_ranks = None
+        
+        # Generate Chebyshev points for each dimension
+        self.points = []
+        self.cheb_points = []
+        
+        for i, (a, b) in enumerate(domains):
+            N = degrees[i]
+            # Chebyshev nodes in [-1, 1]
+            k = np.arange(N+1)
+            z = np.cos(np.pi * k / N)
+            
+            # Map to domain [a, b]
+            x = 0.5 * (b - a) * (z + 1) + a
+            
+            self.cheb_points.append(z)  # Store points in [-1, 1]
+            self.points.append(x)       # Store mapped points
+        
+        # Cache for Chebyshev polynomials
+        self._poly_cache = {}
+    
+    def _chebyshev_polynomial(self, n, x):
+        """
+        Evaluate Chebyshev polynomial T_n(x).
+        
+        Parameters:
+        -----------
+        n : int
+            Degree of the polynomial.
+        x : float
+            Point at which to evaluate the polynomial, in [-1, 1].
+            
+        Returns:
+        --------
+        float
+            Value of T_n(x).
+        """
+        # Create a hashable key for the cache
+        key = (n, float(x))
+        
+        # Check if result is in cache
+        if key in self._poly_cache:
+            return self._poly_cache[key]
+        
+        # Calculate the result
+        if n == 0:
+            result = 1.0
+        elif n == 1:
+            result = float(x)
+        else:
+            # Use recurrence relation: T_n(x) = 2x*T_{n-1}(x) - T_{n-2}(x)
+            Tnm2 = 1.0  # T_0(x)
+            Tnm1 = float(x)  # T_1(x)
+            
+            for i in range(2, n+1):
+                result = 2.0 * x * Tnm1 - Tnm2
+                Tnm2 = Tnm1
+                Tnm1 = result
+        
+        # Store in cache (limit cache size)
+        if len(self._poly_cache) < 10000:  # Limit cache size
+            self._poly_cache[key] = result
+            
+        return result
+    
+    def construct_tensor_P(self, ref_method, subset_indices=None):
+        """
+        Construct tensor P containing prices at Chebyshev grid points.
+        This implements Step 2 of Algorithm 4 (offline phase).
+        
+        Parameters:
+        -----------
+        ref_method : callable
+            Reference pricing method that takes a point in parameter space 
+            and returns a price.
+        subset_indices : list or None
+            List of indices where to evaluate the reference method. If None,
+            evaluate at all Chebyshev nodes.
+            
+        Returns:
+        --------
+        numpy.ndarray
+            Tensor P with prices at Chebyshev nodes.
+        """
+        print("Offline Phase - Step 2: Computing reference prices at Chebyshev nodes")
+        start_time = time.time()
+        
+        # Initialize tensor P
+        P_shape = tuple(d + 1 for d in self.degrees)
+        P = np.zeros(P_shape)
+        
+        # If no subset provided, use all indices
+        if subset_indices is None:
+            # Generate all indices
+            all_indices = list(product(*[range(d + 1) for d in self.degrees]))
+            subset_indices = all_indices
+        
+        total_points = len(subset_indices)
+        print(f"Computing {total_points} prices...")
+        
+        # Evaluate at each point in the subset
+        for i, indices in enumerate(subset_indices):
+            if i % 100 == 0 and i > 0:
+                elapsed = time.time() - start_time
+                remaining = elapsed / i * (total_points - i)
+                print(f"  Progress: {i}/{total_points} ({i/total_points*100:.1f}%)")
+                print(f"  Estimated time remaining: {remaining:.1f} seconds")
+            
+            # Construct parameter point
+            param_point = tuple(self.points[dim][idx] for dim, idx in enumerate(indices))
+            
+            # Evaluate reference pricing method
+            price = ref_method(param_point)
+            
+            # Store in tensor P
+            P[indices] = price
+        
+        elapsed = time.time() - start_time
+        print(f"Completed in {elapsed:.2f} seconds")
+        
+        self.P = P
+        return P
+    
+    def tensor_completion(self, P_samples, max_rank=10, tol=1e-4):
+        """
+        Perform tensor completion to approximate full tensor P in TT format.
+        This implements Step 3 of Algorithm 4 (offline phase).
+        
+        Parameters:
+        -----------
+        P_samples : dict
+            Dictionary mapping indices to price values.
+        max_rank : int
+            Maximum TT rank.
+        tol : float
+            Completion tolerance.
+            
+        Returns:
+        --------
+        numpy.ndarray
+            Completed tensor P.
+        """
+        print("Offline Phase - Step 3: Performing tensor completion")
+        start_time = time.time()
+        
+        # This is a simplified placeholder for the tensor completion algorithm
+        # In the paper, this uses Algorithm 2 (adaptive sampling strategy)
+        
+        # We'll just use the sampled values to fill in the full tensor
+        # In a real implementation, this would reconstruct the full tensor
+        # from sampled values using low-rank tensor completion
+        
+        # Initialize tensor P
+        P_shape = tuple(d + 1 for d in self.degrees)
+        P = np.zeros(P_shape)
+        
+        # Fill in known values
+        for indices, value in P_samples.items():
+            P[indices] = value
+        
+        # In a real implementation, we would use tensor completion
+        # to fill in the missing values
+        
+        elapsed = time.time() - start_time
+        print(f"Completed in {elapsed:.2f} seconds")
+        
+        print("Note: This is a simplified placeholder. In a real implementation,")
+        print("tensor completion would be used to reconstruct the full tensor P.")
+        
+        self.P = P
+        return P
+    
+    def construct_tensor_C(self):
+        """
+        Construct tensor C containing Chebyshev coefficients.
+        This implements Step 4 of Algorithm 4 (offline phase).
+        
+        Returns:
+        --------
+        numpy.ndarray
+            Tensor C with Chebyshev coefficients.
+        """
+        print("Offline Phase - Step 4: Computing Chebyshev coefficients")
+        start_time = time.time()
+        
+        if self.P is None:
+            raise ValueError("Tensor P not constructed. Call construct_tensor_P first.")
+        
+        # Initialize C as a copy of P
+        C = self.P.copy()
+        
+        # Compute Chebyshev coefficients using efficient algorithm
+        # as described in Section 2.4.2 of the paper
+        
+        # Loop through each dimension/mode
+        for m in range(self.dims):
+            # Construct the basis matrix F_n for this dimension
+            F_n = self._construct_basis_matrix(self.degrees[m])
+            
+            # Perform mode-m multiplication: C = C ×_m F_n
+            C = self._mode_multiply(C, F_n, m)
+        
+        elapsed = time.time() - start_time
+        print(f"Completed in {elapsed:.2f} seconds")
+        
+        self.C = C
+        return C
+    
+    def _construct_basis_matrix(self, n):
+        """
+        Construct the Chebyshev basis matrix F_n as described in equation (11).
+        
+        Parameters:
+        -----------
+        n : int
+            Interpolation order (degree of Chebyshev polynomial)
+        
+        Returns:
+        --------
+        np.ndarray
+            Chebyshev basis matrix F_n
+        """
+        F_n = np.zeros((n+1, n+1))
+        
+        for j in range(n+1):
+            for k in range(n+1):
+                # Factor for all terms
+                factor = 2.0 / n
+                
+                # Additional factor for edge coefficients
+                if j == 0 or j == n:
+                    factor *= 0.5
+                    
+                # Compute cosine term
+                angle = j * np.pi * k / n
+                F_n[j, k] = factor * np.cos(angle)
+        
+        return F_n
+    
+    def _mode_multiply(self, tensor, matrix, mode):
+        """
+        Perform mode-m multiplication of a tensor with a matrix.
+        
+        Parameters:
+        -----------
+        tensor : np.ndarray
+            Input tensor
+        matrix : np.ndarray
+            Matrix to multiply with
+        mode : int
+            Mode along which to multiply
+            
+        Returns:
+        --------
+        np.ndarray
+            Result of mode multiplication
+        """
+        # Get tensor shape
+        shape = tensor.shape
+        
+        # Reshape tensor for matrix multiplication
+        # Move the mode to the first dimension
+        tensor_reshaped = np.moveaxis(tensor, mode, 0)
+        # Reshape to 2D
+        tensor_flat = tensor_reshaped.reshape(shape[mode], -1)
+        
+        # Perform matrix multiplication
+        result_flat = matrix @ tensor_flat
+        
+        # Reshape back to tensor
+        result_shape = list(shape)
+        result_shape[mode] = matrix.shape[0]
+        result_reshaped = result_flat.reshape([matrix.shape[0]] + list(tensor_reshaped.shape[1:]))
+        result = np.moveaxis(result_reshaped, 0, mode)
+        
+        return result
+    
+    def evaluate_chebyshev_basis(self, point):
+        """
+        Evaluate Chebyshev basis at a point (Step 8 of Algorithm 4).
+        
+        Parameters:
+        -----------
+        point : tuple
+            Point in parameter space at which to evaluate
+            
+        Returns:
+        --------
+        list
+            List of vectors containing Chebyshev polynomial values for each dimension
+        """
+        # Map point to [-1, 1]^d
+        z = []
+        for i, (a, b) in enumerate(self.domains):
+            p = point[i]
+            z.append(2.0 * (p - a) / (b - a) - 1.0)
+        
+        # Evaluate Chebyshev polynomials at mapped point
+        T_vectors = []
+        for dim, z_val in enumerate(z):
+            T_dim = np.zeros(self.degrees[dim] + 1)
+            for j in range(self.degrees[dim] + 1):
+                T_dim[j] = self._chebyshev_polynomial(j, z_val)
+            T_vectors.append(T_dim)
+        
+        return T_vectors
+    
+    def evaluate_interpolation(self, point):
+        """
+        Evaluate the Chebyshev interpolation at a point.
+        This implements Steps 8-9 of Algorithm 4 (online phase).
+        
+        Parameters:
+        -----------
+        point : tuple
+            Point in parameter space at which to evaluate
+            
+        Returns:
+        --------
+        float
+            Interpolated value
+        """
+        if self.C is None:
+            raise ValueError("Tensor C not constructed. Run offline phase first.")
+        
+        print("Online Phase - Steps 8-9: Evaluating interpolated price")
+        start_time = time.time()
+        
+        # Step 8: Evaluate Chebyshev basis at the point
+        T_vectors = self.evaluate_chebyshev_basis(point)
+        
+        # Step 9: Compute interpolated price as inner product <C, T_p>
+        interpolated_price = self._tensor_inner_product(self.C, T_vectors)
+        
+        elapsed = time.time() - start_time
+        print(f"Evaluation completed in {elapsed:.4f} seconds")
+        
+        return interpolated_price
+    
+    def evaluate_batch(self, points):
+        """
+        Evaluate the Chebyshev interpolation at multiple points.
+        
+        Parameters:
+        -----------
+        points : list of tuples
+            Points in parameter space at which to evaluate
+            
+        Returns:
+        --------
+        numpy.ndarray
+            Interpolated values
+        """
+        if self.C is None:
+            raise ValueError("Tensor C not constructed. Run offline phase first.")
+        
+        # Handle single point case
+        if isinstance(points, tuple):
+            return self.evaluate_interpolation(points)
+        
+        # Process multiple points
+        results = np.zeros(len(points))
+        
+        print(f"Evaluating at {len(points)} points...")
+        start_time = time.time()
+        
+        for i, point in enumerate(points):
+            results[i] = self.evaluate_interpolation(point)
+            
+            # Progress reporting
+            if (i+1) % 10 == 0:
+                elapsed = time.time() - start_time
+                avg_time = elapsed / (i+1)
+                remaining = avg_time * (len(points) - (i+1))
+                print(f"  Processed {i+1}/{len(points)} points. Estimated time remaining: {remaining:.1f} seconds")
+        
+        total_time = time.time() - start_time
+        print(f"Batch evaluation completed in {total_time:.2f} seconds")
+        
+        return results
+    
+    def _tensor_inner_product(self, tensor, vectors):
+        """
+        Compute the inner product between a tensor and a set of vectors.
+        This is the efficient computation of <C, T_p> as in equation (12).
+        
+        Parameters:
+        -----------
+        tensor : numpy.ndarray
+            Tensor (coefficient tensor C)
+        vectors : list of numpy.ndarray
+            List of vectors (Chebyshev basis vectors T_j)
+            
+        Returns:
+        --------
+        float
+            Inner product value
+        """
+        # Start with the full tensor
+        result = tensor
+        
+        # Successively contract along each dimension
+        for dim, vec in enumerate(vectors):
+            # Contract along this dimension
+            result = np.tensordot(result, vec, axes=([0], [0]))
+        
+        return result
+    
+    def run_offline_phase(self, ref_method, subset_size=None):
+        """
+        Run the complete offline phase of Algorithm 4.
+        
+        Parameters:
+        -----------
+        ref_method : callable
+            Reference pricing method that takes a point in parameter space 
+            and returns a price.
+        subset_size : int or None
+            Size of the subset of Chebyshev nodes to evaluate. If None,
+            evaluate at all nodes.
+            
+        Returns:
+        --------
+        numpy.ndarray
+            Tensor C with Chebyshev coefficients.
+        """
+        print("=== OFFLINE PHASE ===")
+        overall_start = time.time()
+        
+        # Generate subset of indices if specified
+        if subset_size is not None:
+            # Generate all possible indices
+            all_indices = list(product(*[range(d + 1) for d in self.degrees]))
+            total_points = len(all_indices)
+            
+            if subset_size >= total_points:
+                subset_indices = all_indices
+            else:
+                # Randomly sample indices
+                np.random.seed(42)
+                sample_idx = np.random.choice(total_points, size=subset_size, replace=False)
+                subset_indices = [all_indices[i] for i in sample_idx]
+        else:
+            subset_indices = None
+        
+        # Step 2: Construct tensor P
+        if subset_indices is not None:
+            # Compute P at subset of points
+            P_samples = {}
+            for indices in subset_indices:
+                param_point = tuple(self.points[dim][idx] for dim, idx in enumerate(indices))
+                price = ref_method(param_point)
+                P_samples[indices] = price
+            
+            # Step 3: Use tensor completion
+            self.P = self.tensor_completion(P_samples)
+        else:
+            # Compute P at all Chebyshev nodes
+            self.P = self.construct_tensor_P(ref_method)
+        
+        # Step 4: Construct tensor C
+        self.C = self.construct_tensor_C()
+        
+        overall_elapsed = time.time() - overall_start
+        print(f"Offline phase completed in {overall_elapsed:.2f} seconds")
+        
+        return self.C
+    
+    def run_online_phase(self, points):
+        """
+        Run the online phase of Algorithm 4 for one or more points.
+        
+        Parameters:
+        -----------
+        points : tuple or list of tuples
+            Point(s) in parameter space at which to evaluate
+            
+        Returns:
+        --------
+        float or numpy.ndarray
+            Interpolated value(s)
+        """
+        print("=== ONLINE PHASE ===")
+        
+        # Handle both single point and multiple points
+        if isinstance(points, tuple) or (isinstance(points, list) and 
+                                        not isinstance(points[0], (list, tuple))):
+            # Single point
+            return self.evaluate_interpolation(points)
+        else:
+            # Multiple points
+            return self.evaluate_batch(points)
+    
+    def run_algorithm4(self, ref_method, evaluation_points, subset_size=None):
+        """
+        Run the complete Algorithm 4 (offline + online phases).
+        
+        Parameters:
+        -----------
+        ref_method : callable
+            Reference pricing method that takes a point in parameter space 
+            and returns a price.
+        evaluation_points : tuple or list of tuples
+            Point(s) in parameter space at which to evaluate
+        subset_size : int or None
+            Size of the subset of Chebyshev nodes to evaluate. If None,
+            evaluate at all nodes.
+            
+        Returns:
+        --------
+        float or numpy.ndarray
+            Interpolated value(s)
+        """
+        # Run offline phase
+        self.run_offline_phase(ref_method, subset_size)
+        
+        # Run online phase
+        return self.run_online_phase(evaluation_points)
+
+# Example usage
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D
+    
+    # Define a simple 2D reference method (European call option price in BS model)
+    def bs_call_price(S, K, T, r, sigma):
+        """Black-Scholes call option price."""
+        from scipy.stats import norm
+        
+        d1 = (np.log(S/K) + (r + 0.5*sigma**2)*T) / (sigma*np.sqrt(T))
+        d2 = d1 - sigma*np.sqrt(T)
+        
+        return S * norm.cdf(d1) - K * np.exp(-r*T) * norm.cdf(d2)
+    
+    # Define reference pricing method with fixed parameters except S0 and sigma
+    def reference_method(params):
+        S0, sigma = params
+        K = 100
+        T = 1.0
+        r = 0.05
+        
+        return bs_call_price(S0, K, T, r, sigma)
+    
+    # Create interpolation
+    domains = [(80.0, 120.0), (0.1, 0.4)]  # S0, sigma
+    degrees = [5, 5]  # 5th degree in each dimension
+    cheb = ChebyshevInterpolation(domains, degrees)
+    
+    # Run Algorithm 4
+    # Offline phase
+    cheb.run_offline_phase(reference_method)
+    
+    # Online phase - evaluate at a single point
+    test_point = (100.0, 0.2)  # S0=100, sigma=0.2
+    interp_price = cheb.run_online_phase(test_point)
+    exact_price = reference_method(test_point)
+    
+    print(f"\nInterpolated price at {test_point}: {interp_price:.6f}")
+    print(f"Exact price: {exact_price:.6f}")
+    print(f"Absolute error: {abs(interp_price - exact_price):.6e}")
+    print(f"Relative error: {abs(interp_price - exact_price)/exact_pri
