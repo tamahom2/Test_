@@ -1,0 +1,1024 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from itertools import product
+import time
+
+
+class PiecewiseChebyshev:
+    """
+    Piecewise Chebyshev interpolation for functions with critical points.
+    
+    This class divides the domain at critical points and applies separate
+    Chebyshev interpolations to each segment, providing high accuracy for
+    functions with non-differentiable points or high convexity.
+    """
+    
+    def __init__(self, domains, degrees, critical_points=None):
+        """
+        Initialize the piecewise Chebyshev interpolation.
+        
+        Parameters:
+        -----------
+        domains : list of tuples
+            List of (min, max) tuples defining the domain in each dimension.
+        degrees : list of int or list of lists
+            Degrees for Chebyshev polynomials in each dimension and segment.
+            If a single int or list of ints, the same degree is used for all segments.
+            If a list of lists, each inner list specifies the degrees for segments in that dimension.
+        critical_points : list or None
+            List of critical points for each dimension.
+            For each dimension, provide a list of critical points that divide the domain.
+            Critical points must be strictly inside the domain bounds.
+        """
+        self.domains = domains
+        self.dims = len(domains)
+        
+        # Process critical points to create sub-domains
+        if critical_points is None:
+            self.critical_points = [[] for _ in range(self.dims)]
+            self.segments = [(domain,) for domain in domains]  # One segment per dimension
+        elif not isinstance(critical_points[0], (list, tuple, np.ndarray)):
+            # Single list of critical points, assume it's for first dimension
+            self.critical_points = [sorted(critical_points)] + [[] for _ in range(self.dims-1)]
+        else:
+            self.critical_points = [sorted(points) for points in critical_points]
+        
+        # Check critical points are within domains
+        for dim, (domain, points) in enumerate(zip(domains, self.critical_points)):
+            for point in points:
+                if not (domain[0] < point < domain[1]):
+                    raise ValueError(f"Critical point {point} in dimension {dim} is not within domain {domain}")
+        
+        # Create segments for each dimension
+        self.segments = []
+        for dim, (domain, points) in enumerate(zip(domains, self.critical_points)):
+            a, b = domain
+            if not points:
+                self.segments.append([(a, b)])
+            else:
+                # Add the start point, all segments, and the end point
+                segment_points = [a] + points + [b]
+                self.segments.append([(segment_points[i], segment_points[i+1]) 
+                                      for i in range(len(segment_points)-1)])
+        
+        # Process degrees
+        if isinstance(degrees, int):
+            # Single degree for all dimensions and segments
+            self.degrees = [[degrees for _ in segment_list] for segment_list in self.segments]
+        elif isinstance(degrees[0], int):
+            # One degree per dimension, same for all segments in that dimension
+            self.degrees = [[deg for _ in segment_list] for deg, segment_list in zip(degrees, self.segments)]
+        else:
+            # List of lists: specific degree for each segment in each dimension
+            # Check lengths match
+            for dim, (deg_list, segment_list) in enumerate(zip(degrees, self.segments)):
+                if len(deg_list) != len(segment_list):
+                    raise ValueError(f"Number of degrees ({len(deg_list)}) doesn't match number of segments ({len(segment_list)}) for dimension {dim}")
+            self.degrees = degrees
+        
+        # Create interpolation objects for each segment combination
+        self._create_segment_interpolators()
+        
+        # Cache for Chebyshev polynomials
+        self._poly_cache = {}
+        
+        # Interpolation tensors
+        self.P = {}  # Dictionary of tensors P for each segment
+        self.C = {}  # Dictionary of tensors C for each segment
+    
+    def _create_segment_interpolators(self):
+        """Create segment interpolators for all segment combinations"""
+        # For 1D case, this is simple
+        if self.dims == 1:
+            self.segment_interpolators = []
+            for seg_idx, (segment, degree) in enumerate(zip(self.segments[0], self.degrees[0])):
+                interp = SegmentChebyshev(segment, degree)
+                self.segment_interpolators.append((interp, seg_idx))
+            return
+        
+        # For multi-dimensional case, create all combinations of segments
+        segment_indices = [range(len(segments)) for segments in self.segments]
+        self.segment_interpolators = []
+        
+        for seg_indices in product(*segment_indices):
+            # Create domains for this segment combination
+            segment_domains = [self.segments[dim][idx] for dim, idx in enumerate(seg_indices)]
+            segment_degrees = [self.degrees[dim][idx] for dim, idx in enumerate(seg_indices)]
+            
+            # Create interpolator for this segment
+            interp = SegmentChebyshev(segment_domains, segment_degrees)
+            self.segment_interpolators.append((interp, seg_indices))
+    
+    def _find_segment(self, point):
+        """Find which segment a point belongs to"""
+        if isinstance(point, (int, float)):
+            point = [point]  # Convert to list for 1D case
+        
+        segment_indices = []
+        for dim, p in enumerate(point):
+            # Find segment in this dimension
+            found = False
+            for i, segment in enumerate(self.segments[dim]):
+                if segment[0] <= p <= segment[1]:
+                    segment_indices.append(i)
+                    found = True
+                    break
+            
+            if not found:
+                raise ValueError(f"Point {p} in dimension {dim} is outside the domain")
+        
+        if self.dims == 1:
+            return segment_indices[0]
+        else:
+            return tuple(segment_indices)
+    
+    def construct_tensor_P(self, ref_method, subset_indices=None):
+        """
+        Construct tensor P containing values at Chebyshev grid points for each segment.
+        
+        Parameters:
+        -----------
+        ref_method : callable
+            Reference method that takes a point and returns a value.
+        subset_indices : dict or None
+            Dictionary mapping segment indices to list of indices where to evaluate 
+            the reference method. If None, evaluate at all Chebyshev nodes.
+            
+        Returns:
+        --------
+        dict
+            Dictionary mapping segment indices to tensors P with values at Chebyshev nodes.
+        """
+        print("Offline Phase - Step 2: Computing reference values at Chebyshev nodes for each segment")
+        start_time = time.time()
+        
+        # Process each segment
+        for interp, seg_idx in self.segment_interpolators:
+            if subset_indices is not None and seg_idx in subset_indices:
+                subset = subset_indices[seg_idx]
+            else:
+                subset = None
+            
+            # Construct P for this segment
+            print(f"Processing segment {seg_idx}...")
+            interp.construct_tensor_P(ref_method, subset)
+        
+        # Collect all P tensors
+        self.P = {seg_idx: interp.P for interp, seg_idx in self.segment_interpolators}
+        
+        elapsed = time.time() - start_time
+        print(f"Completed in {elapsed:.2f} seconds")
+        
+        return self.P
+    
+    def construct_tensor_C(self):
+        """
+        Construct tensor C containing Chebyshev coefficients for each segment.
+        
+        Returns:
+        --------
+        dict
+            Dictionary mapping segment indices to tensors C with Chebyshev coefficients.
+        """
+        print("Offline Phase - Step 4: Computing Chebyshev coefficients for each segment")
+        start_time = time.time()
+        
+        # Process each segment
+        for interp, seg_idx in self.segment_interpolators:
+            # Construct C for this segment
+            interp.construct_tensor_C()
+        
+        # Collect all C tensors
+        self.C = {seg_idx: interp.C for interp, seg_idx in self.segment_interpolators}
+        
+        elapsed = time.time() - start_time
+        print(f"Completed in {elapsed:.2f} seconds")
+        
+        return self.C
+    
+    def evaluate_interpolation(self, point):
+        """
+        Evaluate the piecewise Chebyshev interpolation at a point.
+        
+        Parameters:
+        -----------
+        point : tuple or float
+            Point in parameter space at which to evaluate
+            
+        Returns:
+        --------
+        float
+            Interpolated value
+        """
+        # Find which segment the point belongs to
+        segment_idx = self._find_segment(point)
+        
+        # Find the corresponding interpolator
+        for interp, seg_idx in self.segment_interpolators:
+            if seg_idx == segment_idx:
+                return interp.evaluate_interpolation(point)
+        
+        raise ValueError(f"No interpolator found for segment {segment_idx}")
+    
+    def evaluate_batch(self, points):
+        """
+        Evaluate the piecewise Chebyshev interpolation at multiple points.
+        
+        Parameters:
+        -----------
+        points : list of tuples or array
+            Points in parameter space at which to evaluate
+            
+        Returns:
+        --------
+        numpy.ndarray
+            Interpolated values
+        """
+        # Handle different input formats
+        if self.dims == 1 and isinstance(points[0], (int, float)):
+            points = [(p,) for p in points]
+        
+        # Process multiple points
+        results = np.zeros(len(points))
+        
+        # Group points by segment to avoid switching interpolators
+        segment_points = {}
+        segment_indices = {}
+        
+        for i, point in enumerate(points):
+            segment_idx = self._find_segment(point)
+            if segment_idx not in segment_points:
+                segment_points[segment_idx] = []
+                segment_indices[segment_idx] = []
+            segment_points[segment_idx].append(point)
+            segment_indices[segment_idx].append(i)
+        
+        # Evaluate points in each segment
+        for segment_idx, points_list in segment_points.items():
+            # Find the corresponding interpolator
+            for interp, seg_idx in self.segment_interpolators:
+                if seg_idx == segment_idx:
+                    # Evaluate points in this segment
+                    values = interp.evaluate_batch(points_list)
+                    # Store results in correct positions
+                    for j, value in enumerate(values):
+                        results[segment_indices[segment_idx][j]] = value
+                    break
+        
+        return results
+    
+    def run_offline_phase(self, ref_method, subset_size=None):
+        """
+        Run the complete offline phase for all segments.
+        
+        Parameters:
+        -----------
+        ref_method : callable
+            Reference method that takes a point and returns a value.
+        subset_size : int or None
+            If given, use random subset of this size for each segment.
+            
+        Returns:
+        --------
+        dict
+            Dictionary mapping segment indices to tensors C with Chebyshev coefficients.
+        """
+        print("=== OFFLINE PHASE ===")
+        overall_start = time.time()
+        
+        # Generate subset indices if specified
+        subset_indices = None
+        if subset_size is not None:
+            subset_indices = {}
+            for interp, seg_idx in self.segment_interpolators:
+                # Generate all possible indices for this segment
+                if self.dims == 1:
+                    n = interp.degrees + 1
+                    all_indices = list(range(n))
+                else:
+                    all_indices = list(product(*[range(d + 1) for d in interp.degrees]))
+                
+                total_points = len(all_indices)
+                
+                if subset_size >= total_points:
+                    subset = all_indices
+                else:
+                    # Randomly sample indices
+                    np.random.seed(42 + hash(str(seg_idx)))
+                    sample_idx = np.random.choice(total_points, size=subset_size, replace=False)
+                    subset = [all_indices[i] for i in sample_idx]
+                
+                subset_indices[seg_idx] = subset
+        
+        # Step 2: Construct tensor P for each segment
+        self.P = self.construct_tensor_P(ref_method, subset_indices)
+        
+        # Step 4: Construct tensor C for each segment
+        self.C = self.construct_tensor_C()
+        
+        overall_elapsed = time.time() - overall_start
+        print(f"Offline phase completed in {overall_elapsed:.2f} seconds")
+        
+        return self.C
+    
+    def run_online_phase(self, points):
+        """
+        Run the online phase for one or more points.
+        
+        Parameters:
+        -----------
+        points : tuple or list of tuples
+            Point(s) in parameter space at which to evaluate
+            
+        Returns:
+        --------
+        float or numpy.ndarray
+            Interpolated value(s)
+        """
+        print("=== ONLINE PHASE ===")
+        
+        # Handle both single point and multiple points
+        if isinstance(points, tuple) or (isinstance(points, (int, float)) and self.dims == 1):
+            # Single point
+            return self.evaluate_interpolation(points)
+        else:
+            # Multiple points
+            return self.evaluate_batch(points)
+    
+    def run_algorithm(self, ref_method, evaluation_points, subset_size=None):
+        """
+        Run the complete algorithm (offline + online phases).
+        
+        Parameters:
+        -----------
+        ref_method : callable
+            Reference method that takes a point and returns a value.
+        evaluation_points : tuple or list of tuples
+            Point(s) in parameter space at which to evaluate
+        subset_size : int or None
+            If given, use random subset of this size for each segment.
+            
+        Returns:
+        --------
+        float or numpy.ndarray
+            Interpolated value(s)
+        """
+        # Run offline phase
+        self.run_offline_phase(ref_method, subset_size)
+        
+        # Run online phase
+        return self.run_online_phase(evaluation_points)
+
+
+class SegmentChebyshev:
+    """
+    Chebyshev interpolation for a single segment.
+    This is a simpler version of the ChebyshevInterpolation class 
+    that works on a single segment of the domain.
+    """
+    
+    def __init__(self, domain, degree):
+        """
+        Initialize the Chebyshev interpolation for a segment.
+        
+        Parameters:
+        -----------
+        domain : tuple or list of tuples
+            Domain bounds as (min, max) or list of (min, max) for multi-dimensional case.
+        degree : int or list of int
+            Degree of Chebyshev polynomial for each dimension.
+        """
+        # Standardize inputs for 1D and multi-dimensional cases
+        if isinstance(domain[0], (int, float)):
+            # 1D case
+            self.domains = [domain]
+            self.degrees = [degree]
+            self.dims = 1
+        else:
+            # Multi-dimensional case
+            self.domains = domain
+            self.degrees = degree if isinstance(degree, list) else [degree] * len(domain)
+            self.dims = len(domain)
+        
+        # Generate Chebyshev points for each dimension
+        self.points = []
+        self.cheb_points = []
+        
+        for i, (a, b) in enumerate(self.domains):
+            N = self.degrees[i]
+            # Chebyshev nodes in [-1, 1]
+            k = np.arange(N+1)
+            z = np.cos(np.pi * k / N)
+            
+            # Map to domain [a, b]
+            x = 0.5 * (b - a) * (z + 1) + a
+            
+            self.cheb_points.append(z)  # Store points in [-1, 1]
+            self.points.append(x)       # Store mapped points
+        
+        # Tensors for coefficients and values
+        self.P = None  # Tensor of values at Chebyshev nodes
+        self.C = None  # Tensor of Chebyshev coefficients
+        
+        # Cache for Chebyshev polynomials
+        self._poly_cache = {}
+    
+    def _chebyshev_polynomial(self, n, x):
+        """
+        Evaluate Chebyshev polynomial T_n(x).
+        
+        Parameters:
+        -----------
+        n : int
+            Degree of the polynomial.
+        x : float
+            Point at which to evaluate the polynomial, in [-1, 1].
+            
+        Returns:
+        --------
+        float
+            Value of T_n(x).
+        """
+        # Create a hashable key for the cache
+        key = (n, float(x))
+        
+        # Check if result is in cache
+        if key in self._poly_cache:
+            return self._poly_cache[key]
+        
+        # Calculate the result
+        if n == 0:
+            result = 1.0
+        elif n == 1:
+            result = float(x)
+        else:
+            # Use recurrence relation: T_n(x) = 2x*T_{n-1}(x) - T_{n-2}(x)
+            Tnm2 = 1.0  # T_0(x)
+            Tnm1 = float(x)  # T_1(x)
+            
+            for i in range(2, n+1):
+                result = 2.0 * x * Tnm1 - Tnm2
+                Tnm2 = Tnm1
+                Tnm1 = result
+        
+        # Store in cache (limit cache size)
+        if len(self._poly_cache) < 10000:
+            self._poly_cache[key] = result
+            
+        return result
+    
+    def construct_tensor_P(self, ref_method, subset_indices=None):
+        """
+        Construct tensor P containing values at Chebyshev grid points.
+        
+        Parameters:
+        -----------
+        ref_method : callable
+            Reference method that takes a point and returns a value.
+        subset_indices : list or None
+            List of indices where to evaluate the reference method. If None,
+            evaluate at all Chebyshev nodes.
+            
+        Returns:
+        --------
+        numpy.ndarray
+            Tensor P with values at Chebyshev nodes.
+        """
+        # Initialize tensor P
+        P_shape = tuple(d + 1 for d in self.degrees)
+        P = np.zeros(P_shape)
+        
+        # If no subset provided, use all indices
+        if subset_indices is None:
+            # Generate all indices
+            all_indices = list(product(*[range(d + 1) for d in self.degrees]))
+            subset_indices = all_indices
+        
+        total_points = len(subset_indices)
+        
+        # Evaluate at each point in the subset
+        for i, indices in enumerate(subset_indices):
+            # Construct parameter point
+            if self.dims == 1:
+                param_point = self.points[0][indices]
+            else:
+                param_point = tuple(self.points[dim][idx] for dim, idx in enumerate(indices))
+            
+            # Evaluate reference method
+            value = ref_method(param_point)
+            
+            # Store in tensor P
+            P[indices] = value
+        
+        self.P = P
+        return P
+    
+    def _construct_basis_matrix(self, n):
+        """
+        Construct the Chebyshev basis matrix F_n as described in equation (11).
+        
+        Parameters:
+        -----------
+        n : int
+            Interpolation order (degree of Chebyshev polynomial)
+        
+        Returns:
+        --------
+        np.ndarray
+            Chebyshev basis matrix F_n
+        """
+        F_n = np.zeros((n+1, n+1))
+        
+        for j in range(n+1):
+            for k in range(n+1):
+                # Factor for all terms
+                factor = 2.0 / n
+                
+                # Additional factor for edge coefficients
+                if j == 0 or j == n:
+                    factor *= 0.5
+                    
+                # Compute cosine term
+                angle = j * np.pi * k / n
+                F_n[j, k] = factor * np.cos(angle)
+        
+        return F_n
+    
+    def _mode_multiply(self, tensor, matrix, mode):
+        """
+        Perform mode-m multiplication of a tensor with a matrix.
+        
+        Parameters:
+        -----------
+        tensor : np.ndarray
+            Input tensor
+        matrix : np.ndarray
+            Matrix to multiply with
+        mode : int
+            Mode along which to multiply
+            
+        Returns:
+        --------
+        np.ndarray
+            Result of mode multiplication
+        """
+        # Get tensor shape
+        shape = tensor.shape
+        
+        # Reshape tensor for matrix multiplication
+        # Move the mode to the first dimension
+        tensor_reshaped = np.moveaxis(tensor, mode, 0)
+        # Reshape to 2D
+        tensor_flat = tensor_reshaped.reshape(shape[mode], -1)
+        
+        # Perform matrix multiplication
+        result_flat = matrix @ tensor_flat
+        
+        # Reshape back to tensor
+        result_shape = list(shape)
+        result_shape[mode] = matrix.shape[0]
+        result_reshaped = result_flat.reshape([matrix.shape[0]] + 
+                                             list(tensor_reshaped.shape[1:]))
+        result = np.moveaxis(result_reshaped, 0, mode)
+        
+        return result
+    
+    def construct_tensor_C(self):
+        """
+        Construct tensor C containing Chebyshev coefficients.
+        
+        Returns:
+        --------
+        numpy.ndarray
+            Tensor C with Chebyshev coefficients.
+        """
+        if self.P is None:
+            raise ValueError("Tensor P not constructed. Call construct_tensor_P first.")
+        
+        # Initialize C as a copy of P
+        C = self.P.copy()
+        
+        # Compute Chebyshev coefficients
+        # Loop through each dimension/mode
+        for m in range(self.dims):
+            # Construct the basis matrix F_n for this dimension
+            F_n = self._construct_basis_matrix(self.degrees[m])
+            
+            # Perform mode-m multiplication: C = C ×_m F_n
+            C = self._mode_multiply(C, F_n, m)
+        
+        self.C = C
+        return C
+    
+    def evaluate_chebyshev_basis(self, point):
+        """
+        Evaluate Chebyshev basis at a point.
+        
+        Parameters:
+        -----------
+        point : tuple or float
+            Point in parameter space at which to evaluate
+            
+        Returns:
+        --------
+        list
+            List of vectors containing Chebyshev polynomial values for each dimension
+        """
+        # Handle single point in 1D case
+        if isinstance(point, (int, float)) and self.dims == 1:
+            point = (point,)
+        
+        # Map point to [-1, 1]^d
+        z = []
+        for i, (a, b) in enumerate(self.domains):
+            p = point[i]
+            z.append(2.0 * (p - a) / (b - a) - 1.0)
+        
+        # Evaluate Chebyshev polynomials at mapped point
+        T_vectors = []
+        for dim, z_val in enumerate(z):
+            T_dim = np.zeros(self.degrees[dim] + 1)
+            for j in range(self.degrees[dim] + 1):
+                T_dim[j] = self._chebyshev_polynomial(j, z_val)
+            T_vectors.append(T_dim)
+        
+        return T_vectors
+    
+    def evaluate_interpolation(self, point):
+        """
+        Evaluate the Chebyshev interpolation at a point.
+        
+        Parameters:
+        -----------
+        point : tuple or float
+            Point in parameter space at which to evaluate
+            
+        Returns:
+        --------
+        float
+            Interpolated value
+        """
+        if self.C is None:
+            raise ValueError("Tensor C not constructed. Run offline phase first.")
+        
+        # Evaluate Chebyshev basis at the point
+        T_vectors = self.evaluate_chebyshev_basis(point)
+        
+        # Compute interpolated value as inner product <C, T_p>
+        result = self.C.copy()
+        
+        # Successively contract along each dimension
+        for dim, vec in enumerate(T_vectors):
+            result = np.tensordot(result, vec, axes=([0], [0]))
+        
+        return result
+    
+    def evaluate_batch(self, points):
+        """
+        Evaluate the Chebyshev interpolation at multiple points.
+        
+        Parameters:
+        -----------
+        points : list of tuples or array
+            Points in parameter space at which to evaluate
+            
+        Returns:
+        --------
+        numpy.ndarray
+            Interpolated values
+        """
+        if self.C is None:
+            raise ValueError("Tensor C not constructed. Run offline phase first.")
+        
+        # Special case for 1D
+        if self.dims == 1 and isinstance(points[0], (int, float)):
+            points = [(p,) for p in points]
+        
+        # Process multiple points
+        results = np.zeros(len(points))
+        
+        for i, point in enumerate(points):
+            results[i] = self.evaluate_interpolation(point)
+            
+        return results
+
+
+def test_piecewise_chebyshev():
+    """
+    Test the piecewise Chebyshev interpolation on a function with non-differentiable points.
+    """
+    # Define a function with non-differentiable points
+    def test_function(x):
+        """Function with non-differentiable points at x=0 and x=0.5"""
+        if isinstance(x, tuple):
+            x = x[0]
+        if x < 0:
+            return x**2 - 1
+        elif x < 0.5:
+            return 2*x
+        else:
+            return 1 - (x-1)**2
+    
+    # Domain and critical points
+    domain = [(-1, 1)]
+    critical_points = [0, 0.5]  # Non-differentiable points
+    
+    # Degrees
+    degrees = 6  # Same degree for all segments
+    
+    # Create interpolation methods
+    print("\n=== Testing standard Chebyshev vs Piecewise Chebyshev ===")
+    
+    # 1. Standard Chebyshev
+    standard_cheb = SegmentChebyshev(domain, 18)
+    standard_cheb.construct_tensor_P(test_function)
+    standard_cheb.construct_tensor_C()
+    
+    # 2. Piecewise Chebyshev
+    piecewise_cheb = PiecewiseChebyshev(domain, degrees, critical_points)
+    piecewise_cheb.run_offline_phase(test_function)
+    
+    # Test points
+    x_test = np.linspace(domain[0][0], domain[0][1], 1000)
+    
+    # Evaluate exact function and interpolations
+    y_exact = np.array([test_function(x) for x in x_test])
+    y_standard = standard_cheb.evaluate_batch(x_test)
+    y_piecewise = piecewise_cheb.evaluate_batch(x_test)
+    
+    # Calculate errors
+    standard_errors = np.abs(y_exact - y_standard)
+    piecewise_errors = np.abs(y_exact - y_piecewise)
+    
+    # Print error statistics
+    print("\nError statistics:")
+    print(f"Standard Chebyshev (degree 18):")
+    print(f"  Max error: {np.max(standard_errors):.8f}")
+    print(f"  Mean error: {np.mean(standard_errors):.8f}")
+    print(f"  RMS error: {np.sqrt(np.mean(standard_errors**2)):.8f}")
+    
+    print(f"\nPiecewise Chebyshev (degree {degrees} in each segment):")
+    print(f"  Max error: {np.max(piecewise_errors):.8f}")
+    print(f"  Mean error: {np.mean(piecewise_errors):.8f}")
+    print(f"  RMS error: {np.sqrt(np.mean(piecewise_errors**2)):.8f}")
+    
+    # Plot results
+    plt.figure(figsize=(15, 10))
+    
+    # Plot function and approximations
+    plt.subplot(221)
+    plt.plot(x_test, y_exact, 'k-', label='Exact Function')
+    plt.plot(x_test, y_standard, 'g--', label=f'Standard Chebyshev (degree 18)')
+    plt.plot(x_test, y_piecewise, 'r--', label=f'Piecewise Chebyshev (degree {degrees})')
+    plt.grid(True)
+    for cp in critical_points:
+        plt.axvline(x=cp, color='k', linestyle=':', label='Critical Points' if cp == critical_points[0] else "")
+    plt.legend()
+    plt.title('Function with Non-differentiable Points')
+    plt.xlabel('x')
+    plt.ylabel('f(x)')
+    
+    # Plot errors
+    plt.subplot(222)
+    plt.semilogy(x_test, standard_errors, 'g-', label='Standard Chebyshev Error')
+    plt.semilogy(x_test, piecewise_errors, 'r-', label='Piecewise Chebyshev Error')
+    plt.grid(True)
+    for cp in critical_points:
+        plt.axvline(x=cp, color='k', linestyle=':', label='Critical Points' if cp == critical_points[0] else "")
+    plt.legend()
+    plt.title('Error Comparison (log scale)')
+    plt.xlabel('x')
+    plt.ylabel('Absolute Error')
+    
+    # Plot zoomed-in regions around critical points
+    plt.subplot(223)
+    idx1 = (x_test >= -0.1) & (x_test <= 0.1)
+    plt.plot(x_test[idx1], y_exact[idx1], 'k-', label='Exact')
+    plt.plot(x_test[idx1], y_standard[idx1], 'g--', label='Standard')
+    plt.plot(x_test[idx1], y_piecewise[idx1], 'r--', label='Piecewise')
+    plt.grid(True)
+    plt.axvline(x=0, color='k', linestyle=':')
+    plt.legend()
+    plt.title('Zoom: Around x=0')
+    plt.xlabel('x')
+    plt.ylabel('f(x)')
+    
+    plt.subplot(224)
+    idx2 = (x_test >= 0.4) & (x_test <= 0.6)
+    plt.plot(x_test[idx2], y_exact[idx2], 'k-', label='Exact')
+    plt.plot(x_test[idx2], y_standard[idx2], 'g--', label='Standard')
+    plt.plot(x_test[idx2], y_piecewise[idx2], 'r--', label='Piecewise')
+    plt.grid(True)
+    plt.axvline(x=0.5, color='k', linestyle=':')
+    plt.legend()
+    plt.title('Zoom: Around x=0.5')
+    plt.xlabel('x')
+    plt.ylabel('f(x)')
+    
+    plt.tight_layout()
+    plt.show()
+
+
+def test_option_pricing():
+    """
+    Test the piecewise Chebyshev interpolation on option pricing.
+    """
+    # Define call option payoff function
+    def call_payoff(S, K=100):
+        """Call option payoff function"""
+        if isinstance(S, tuple):
+            S = S[0]
+        return max(0, S - K)
+    
+    # Define Black-Scholes call option price
+    def black_scholes_call(S, K=100, T=1.0, r=0.05, sigma=0.2):
+        """Black-Scholes call option price"""
+        from scipy.stats import norm
+        
+        if isinstance(S, tuple):
+            S = S[0]
+            
+        if T <= 0:
+            return call_payoff(S, K)
+            
+        d1 = (np.log(S/K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+        d2 = d1 - sigma * np.sqrt(T)
+        
+        return S * norm.cdf(d1) - K * np.exp(-r*T) * norm.cdf(d2)
+    
+    # Domain and parameters
+    domain = [(50, 150)]  # S in [50, 150]
+    K = 100  # Strike price
+    
+    # Test with payoff function (non-differentiable at K)
+    print("\n=== Testing with Call Option Payoff ===")
+    
+    # Create standard and piecewise Chebyshev interpolations
+    standard_cheb = SegmentChebyshev(domain, 20)
+    standard_cheb.construct_tensor_P(lambda S: call_payoff(S))
+    standard_cheb.construct_tensor_C()
+    
+    piecewise_cheb = PiecewiseChebyshev(domain, 10, [K])
+    piecewise_cheb.run_offline_phase(lambda S: call_payoff(S))
+    
+    # Test points
+    S_test = np.linspace(domain[0][0], domain[0][1], 1000)
+    
+    # Evaluate
+    exact_values = np.array([call_payoff(S) for S in S_test])
+    standard_values = standard_cheb.evaluate_batch(S_test)
+    piecewise_values = piecewise_cheb.evaluate_batch(S_test)
+    
+    # Calculate errors
+    standard_errors = np.abs(exact_values - standard_values)
+    piecewise_errors = np.abs(exact_values - piecewise_values)
+    
+    # Print error statistics
+    print("\nError statistics for Call Option Payoff:")
+    print(f"Standard Chebyshev (degree 20) max error: {np.max(standard_errors):.8f}")
+    print(f"Piecewise Chebyshev (degree 10) max error: {np.max(piecewise_errors):.8f}")
+    
+    # Test with Black-Scholes function (smooth but with high curvature)
+    print("\n=== Testing with Black-Scholes Price ===")
+    
+    # Create standard and piecewise Chebyshev interpolations
+    standard_bs = SegmentChebyshev(domain, 12)
+    standard_bs.construct_tensor_P(lambda S: black_scholes_call(S))
+    standard_bs.construct_tensor_C()
+    
+    piecewise_bs = PiecewiseChebyshev(domain, 6, [K])
+    piecewise_bs.run_offline_phase(lambda S: black_scholes_call(S))
+    
+    # Evaluate
+    exact_bs = np.array([black_scholes_call(S) for S in S_test])
+    standard_bs_values = standard_bs.evaluate_batch(S_test)
+    piecewise_bs_values = piecewise_bs.evaluate_batch(S_test)
+    
+    # Calculate errors
+    standard_bs_errors = np.abs(exact_bs - standard_bs_values)
+    piecewise_bs_errors = np.abs(exact_bs - piecewise_bs_values)
+    
+    # Print error statistics
+    print("\nError statistics for Black-Scholes Price:")
+    print(f"Standard Chebyshev (degree 12) max error: {np.max(standard_bs_errors):.8f}")
+    print(f"Piecewise Chebyshev (degree 6) max error: {np.max(piecewise_bs_errors):.8f}")
+    
+    # Focus on the region around the strike
+    near_K = (S_test >= 95) & (S_test <= 105)
+    
+    print("\nError statistics near strike price (K=100):")
+    print(f"Standard Chebyshev (degree 12) max error: {np.max(standard_bs_errors[near_K]):.8f}")
+    print(f"Piecewise Chebyshev (degree 6) max error: {np.max(piecewise_bs_errors[near_K]):.8f}")
+    
+    # Plot results
+    plt.figure(figsize=(15, 10))
+    
+    # Plot payoff function and approximations
+    plt.subplot(221)
+    plt.plot(S_test, exact_values, 'k-', label='Exact Payoff')
+    plt.plot(S_test, standard_values, 'g--', label='Standard Chebyshev (deg 20)')
+    plt.plot(S_test, piecewise_values, 'r--', label='Piecewise Chebyshev (deg 10)')
+    plt.grid(True)
+    plt.axvline(x=K, color='k', linestyle=':', label='Strike (K)')
+    plt.legend()
+    plt.title('Call Option Payoff')
+    plt.xlabel('Stock Price (S)')
+    plt.ylabel('Payoff')
+    
+    # Plot payoff errors
+    plt.subplot(222)
+    plt.semilogy(S_test, standard_errors, 'g-', label='Standard Error')
+    plt.semilogy(S_test, piecewise_errors, 'r-', label='Piecewise Error')
+    plt.grid(True)
+    plt.axvline(x=K, color='k', linestyle=':', label='Strike (K)')
+    plt.legend()
+    plt.title('Call Payoff Errors (log scale)')
+    plt.xlabel('Stock Price (S)')
+    plt.ylabel('Absolute Error')
+    
+    # Plot Black-Scholes function and approximations
+    plt.subplot(223)
+    plt.plot(S_test, exact_bs, 'k-', label='Exact BS')
+    plt.plot(S_test, standard_bs_values, 'g--', label='Standard Chebyshev (deg 12)')
+    plt.plot(S_test, piecewise_bs_values, 'r--', label='Piecewise Chebyshev (deg 6)')
+    plt.grid(True)
+    plt.axvline(x=K, color='k', linestyle=':', label='Strike (K)')
+    plt.legend()
+    plt.title('Black-Scholes Price')
+    plt.xlabel('Stock Price (S)')
+    plt.ylabel('Option Price')
+    
+    # Plot BS errors
+    plt.subplot(224)
+    plt.semilogy(S_test, standard_bs_errors, 'g-', label='Standard Error')
+    plt.semilogy(S_test, piecewise_bs_errors, 'r-', label='Piecewise Error')
+    plt.grid(True)
+    plt.axvline(x=K, color='k', linestyle=':', label='Strike (K)')
+    plt.legend()
+    plt.title('Black-Scholes Errors (log scale)')
+    plt.xlabel('Stock Price (S)')
+    plt.ylabel('Absolute Error')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Plot zoom around strike price
+    plt.figure(figsize=(15, 8))
+    
+    # Zoom on payoff
+    plt.subplot(221)
+    plt.plot(S_test[near_K], exact_values[near_K], 'k-', label='Exact')
+    plt.plot(S_test[near_K], standard_values[near_K], 'g--', label='Standard')
+    plt.plot(S_test[near_K], piecewise_values[near_K], 'r--', label='Piecewise')
+    plt.grid(True)
+    plt.axvline(x=K, color='k', linestyle=':', label='Strike (K)')
+    plt.legend()
+    plt.title('Zoom: Call Payoff Near Strike')
+    plt.xlabel('Stock Price (S)')
+    plt.ylabel('Payoff')
+    
+    # Zoom on payoff errors
+    plt.subplot(222)
+    plt.semilogy(S_test[near_K], standard_errors[near_K], 'g-', label='Standard Error')
+    plt.semilogy(S_test[near_K], piecewise_errors[near_K], 'r-', label='Piecewise Error')
+    plt.grid(True)
+    plt.axvline(x=K, color='k', linestyle=':', label='Strike (K)')
+    plt.legend()
+    plt.title('Zoom: Call Payoff Errors Near Strike')
+    plt.xlabel('Stock Price (S)')
+    plt.ylabel('Absolute Error (log scale)')
+    
+    # Zoom on BS
+    plt.subplot(223)
+    plt.plot(S_test[near_K], exact_bs[near_K], 'k-', label='Exact')
+    plt.plot(S_test[near_K], standard_bs_values[near_K], 'g--', label='Standard')
+    plt.plot(S_test[near_K], piecewise_bs_values[near_K], 'r--', label='Piecewise')
+    plt.grid(True)
+    plt.axvline(x=K, color='k', linestyle=':', label='Strike (K)')
+    plt.legend()
+    plt.title('Zoom: Black-Scholes Near Strike')
+    plt.xlabel('Stock Price (S)')
+    plt.ylabel('Option Price')
+    
+    # Zoom on BS errors
+    plt.subplot(224)
+    plt.semilogy(S_test[near_K], standard_bs_errors[near_K], 'g-', label='Standard Error')
+    plt.semilogy(S_test[near_K], piecewise_bs_errors[near_K], 'r-', label='Piecewise Error')
+    plt.grid(True)
+    plt.axvline(x=K, color='k', linestyle=':', label='Strike (K)')
+    plt.legend()
+    plt.title('Zoom: Black-Scholes Errors Near Strike')
+    plt.xlabel('Stock Price (S)')
+    plt.ylabel('Absolute Error (log scale)')
+    
+    plt.tight_layout()
+    plt.show()
+
+
+# Run the tests
+if __name__ == "__main__":
+    # Test with a custom function that has non-differentiable points
+    test_piecewise_chebyshev()
+    
+    # Test with option pricing functions
+    test_option_pricing()
