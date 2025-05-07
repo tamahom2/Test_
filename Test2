@@ -1,0 +1,569 @@
+The user wants me to incorporate splines together with Chebyshev interpolation to get the best of both methods, rather than creating a completely separate class for splines. Let me create a hybrid approach that leverages the advantages of both methods:
+
+1. Chebyshev polynomials for smooth regions - they provide excellent approximation with exponential convergence for smooth functions
+2. Splines near non-smooth points (like the strike price in option pricing) - they handle discontinuities in derivatives better
+
+I'll add spline functionality to the existing Chebyshev interpolation implementation, creating a hybrid approach that can:
+1. Automatically detect regions with high curvature or non-differentiable points
+2. Use splines in those regions
+3. Use Chebyshev interpolation elsewhere
+4. Provide a seamless transition between the two methods
+
+This approach should be more effective for financial applications like option pricing where the payoff functions often have kinks or discontinuities at the strike price.
+
+I'll add spline capability to work alongside the Chebyshev implementation. This hybrid approach will allow us to use splines around critical points (like the strike price) while keeping the efficiency of Chebyshev polynomials for smooth regions.
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.interpolate import CubicSpline, RectBivariateSpline, interp1d
+from itertools import product
+import time
+
+
+class HybridInterpolation:
+    """
+    Combines Chebyshev polynomials with splines for optimal interpolation.
+    Uses Chebyshev for smooth regions and splines near critical points.
+    """
+    
+    def __init__(self, domains, degrees, critical_points=None, transition_width=0.1):
+        """
+        Initialize the hybrid interpolation.
+        
+        Parameters:
+        -----------
+        domains : list of tuples
+            List of (min, max) tuples defining the domain in each dimension.
+        degrees : list of int
+            Degrees for Chebyshev polynomials in each dimension.
+        critical_points : list or None
+            List of points where function is non-smooth (e.g., strike prices).
+            For each dimension, provide a list of critical points.
+        transition_width : float
+            Width of the transition region around critical points (as fraction of domain).
+        """
+        self.domains = domains
+        self.degrees = degrees
+        self.dims = len(domains)
+        self.transition_width = transition_width
+        
+        # Process critical points (convert to list of lists if needed)
+        if critical_points is None:
+            self.critical_points = [[] for _ in range(self.dims)]
+        elif not isinstance(critical_points[0], (list, tuple, np.ndarray)):
+            # Single list of critical points, assume it's for first dimension
+            self.critical_points = [critical_points] + [[] for _ in range(self.dims-1)]
+        else:
+            self.critical_points = critical_points
+            
+        # Generate Chebyshev points for each dimension
+        self.points = []
+        self.cheb_points = []
+        
+        for i, (a, b) in enumerate(domains):
+            N = degrees[i]
+            # Chebyshev nodes in [-1, 1]
+            k = np.arange(N+1)
+            z = np.cos(np.pi * k / N)
+            
+            # Map to domain [a, b]
+            x = 0.5 * (b - a) * (z + 1) + a
+            
+            self.cheb_points.append(z)  # Store points in [-1, 1]
+            self.points.append(x)       # Store mapped points
+        
+        # Tensors for coefficients and values
+        self.P = None  # Tensor of values at Chebyshev nodes
+        self.C = None  # Tensor of Chebyshev coefficients
+        
+        # Spline models
+        self.splines = [None for _ in range(self.dims)]
+        self.spline_regions = [[] for _ in range(self.dims)] 
+        
+        # Cache for Chebyshev polynomials
+        self._poly_cache = {}
+    
+    def _chebyshev_polynomial(self, n, x):
+        """
+        Evaluate Chebyshev polynomial T_n(x).
+        
+        Parameters:
+        -----------
+        n : int
+            Degree of the polynomial.
+        x : float
+            Point at which to evaluate the polynomial, in [-1, 1].
+            
+        Returns:
+        --------
+        float
+            Value of T_n(x).
+        """
+        # Create a hashable key for the cache
+        key = (n, float(x))
+        
+        # Check if result is in cache
+        if key in self._poly_cache:
+            return self._poly_cache[key]
+        
+        # Calculate the result
+        if n == 0:
+            result = 1.0
+        elif n == 1:
+            result = float(x)
+        else:
+            # Use recurrence relation: T_n(x) = 2x*T_{n-1}(x) - T_{n-2}(x)
+            Tnm2 = 1.0  # T_0(x)
+            Tnm1 = float(x)  # T_1(x)
+            
+            for i in range(2, n+1):
+                result = 2.0 * x * Tnm1 - Tnm2
+                Tnm2 = Tnm1
+                Tnm1 = result
+        
+        # Store in cache (limit cache size)
+        if len(self._poly_cache) < 10000:
+            self._poly_cache[key] = result
+            
+        return result
+    
+    def _is_in_spline_region(self, point, dim):
+        """
+        Check if a point is in a spline region for a given dimension.
+        
+        Parameters:
+        -----------
+        point : float
+            Point to check
+        dim : int
+            Dimension to check
+            
+        Returns:
+        --------
+        bool
+            True if point is in a spline region
+        """
+        a, b = self.domains[dim]
+        domain_width = b - a
+        
+        for critical in self.critical_points[dim]:
+            width = self.transition_width * domain_width
+            if abs(point - critical) < width:
+                return True
+        
+        return False
+    
+    def _build_splines(self, ref_method, extra_points=5):
+        """
+        Build splines near critical points.
+        
+        Parameters:
+        -----------
+        ref_method : callable
+            Reference method that takes a point and returns a value.
+        extra_points : int
+            Number of extra points to use on each side of critical regions.
+        """
+        print("Building splines near critical points...")
+        
+        # Only implement for 1D case initially
+        if self.dims > 1:
+            return
+            
+        # For each dimension with critical points
+        for dim, critical_list in enumerate(self.critical_points):
+            if not critical_list:
+                continue
+                
+            # For 1D case
+            if self.dims == 1:
+                a, b = self.domains[0]
+                domain_width = b - a
+                
+                # Create spline regions
+                regions = []
+                
+                for critical in critical_list:
+                    width = self.transition_width * domain_width
+                    
+                    # Create spline region
+                    lower = max(a, critical - width)
+                    upper = min(b, critical + width)
+                    
+                    # Add extra points outside region for smoother transition
+                    extra_width = width / extra_points
+                    lower_ext = max(a, lower - extra_width * extra_points)
+                    upper_ext = min(b, upper + extra_width * extra_points)
+                    
+                    # Generate points for spline
+                    spline_points = np.linspace(lower_ext, upper_ext, 
+                                              2*extra_points + 15)  # Adjust number as needed
+                    
+                    # Evaluate function at spline points
+                    if isinstance(ref_method, np.ndarray):
+                        # Ref method is already computed values
+                        def get_value(x):
+                            idx = np.abs(self.points[0] - x).argmin()
+                            return ref_method[idx]
+                        spline_values = np.array([get_value(x) for x in spline_points])
+                    else:
+                        # Ref method is a function
+                        spline_values = np.array([ref_method(x) for x in spline_points])
+                    
+                    # Create cubic spline
+                    spline = CubicSpline(spline_points, spline_values, bc_type='natural')
+                    
+                    # Store region and spline
+                    regions.append((lower, upper, spline))
+                
+                # Store spline regions
+                self.spline_regions[dim] = regions
+    
+    def construct_tensor_P(self, ref_method, subset_indices=None):
+        """
+        Construct tensor P containing values at Chebyshev grid points.
+        
+        Parameters:
+        -----------
+        ref_method : callable
+            Reference method that takes a point and returns a value.
+        subset_indices : list or None
+            List of indices where to evaluate the reference method. If None,
+            evaluate at all Chebyshev nodes.
+            
+        Returns:
+        --------
+        numpy.ndarray
+            Tensor P with values at Chebyshev nodes.
+        """
+        print("Offline Phase - Step 2: Computing reference values at Chebyshev nodes")
+        start_time = time.time()
+        
+        # Initialize tensor P
+        P_shape = tuple(d + 1 for d in self.degrees)
+        P = np.zeros(P_shape)
+        
+        # If no subset provided, use all indices
+        if subset_indices is None:
+            # Generate all indices
+            all_indices = list(product(*[range(d + 1) for d in self.degrees]))
+            subset_indices = all_indices
+        
+        total_points = len(subset_indices)
+        print(f"Computing {total_points} values...")
+        
+        # Evaluate at each point in the subset
+        for i, indices in enumerate(subset_indices):
+            if i % 100 == 0 and i > 0:
+                elapsed = time.time() - start_time
+                remaining = elapsed / i * (total_points - i)
+                print(f"  Progress: {i}/{total_points} ({i/total_points*100:.1f}%)")
+                print(f"  Estimated time remaining: {remaining:.1f} seconds")
+            
+            # Construct parameter point
+            param_point = tuple(self.points[dim][idx] for dim, idx in enumerate(indices))
+            
+            # Evaluate reference method
+            value = ref_method(param_point)
+            
+            # Store in tensor P
+            P[indices] = value
+        
+        elapsed = time.time() - start_time
+        print(f"Completed in {elapsed:.2f} seconds")
+        
+        # Build splines near critical points
+        self._build_splines(ref_method)
+        
+        self.P = P
+        return P
+    
+    def _construct_basis_matrix(self, n):
+        """
+        Construct the Chebyshev basis matrix F_n as described in equation (11).
+        
+        Parameters:
+        -----------
+        n : int
+            Interpolation order (degree of Chebyshev polynomial)
+        
+        Returns:
+        --------
+        np.ndarray
+            Chebyshev basis matrix F_n
+        """
+        F_n = np.zeros((n+1, n+1))
+        
+        for j in range(n+1):
+            for k in range(n+1):
+                # Factor for all terms
+                factor = 2.0 / n
+                
+                # Additional factor for edge coefficients
+                if j == 0 or j == n:
+                    factor *= 0.5
+                    
+                # Compute cosine term
+                angle = j * np.pi * k / n
+                F_n[j, k] = factor * np.cos(angle)
+        
+        return F_n
+    
+    def _mode_multiply(self, tensor, matrix, mode):
+        """
+        Perform mode-m multiplication of a tensor with a matrix.
+        
+        Parameters:
+        -----------
+        tensor : np.ndarray
+            Input tensor
+        matrix : np.ndarray
+            Matrix to multiply with
+        mode : int
+            Mode along which to multiply
+            
+        Returns:
+        --------
+        np.ndarray
+            Result of mode multiplication
+        """
+        # Get tensor shape
+        shape = tensor.shape
+        
+        # Reshape tensor for matrix multiplication
+        # Move the mode to the first dimension
+        tensor_reshaped = np.moveaxis(tensor, mode, 0)
+        # Reshape to 2D
+        tensor_flat = tensor_reshaped.reshape(shape[mode], -1)
+        
+        # Perform matrix multiplication
+        result_flat = matrix @ tensor_flat
+        
+        # Reshape back to tensor
+        result_shape = list(shape)
+        result_shape[mode] = matrix.shape[0]
+        result_reshaped = result_flat.reshape([matrix.shape[0]] + 
+                                             list(tensor_reshaped.shape[1:]))
+        result = np.moveaxis(result_reshaped, 0, mode)
+        
+        return result
+    
+    def construct_tensor_C(self):
+        """
+        Construct tensor C containing Chebyshev coefficients.
+        
+        Returns:
+        --------
+        numpy.ndarray
+            Tensor C with Chebyshev coefficients.
+        """
+        print("Offline Phase - Step 4: Computing Chebyshev coefficients")
+        start_time = time.time()
+        
+        if self.P is None:
+            raise ValueError("Tensor P not constructed. Call construct_tensor_P first.")
+        
+        # Initialize C as a copy of P
+        C = self.P.copy()
+        
+        # Compute Chebyshev coefficients
+        
+        # Loop through each dimension/mode
+        for m in range(self.dims):
+            # Construct the basis matrix F_n for this dimension
+            F_n = self._construct_basis_matrix(self.degrees[m])
+            
+            # Perform mode-m multiplication: C = C ×_m F_n
+            C = self._mode_multiply(C, F_n, m)
+        
+        elapsed = time.time() - start_time
+        print(f"Completed in {elapsed:.2f} seconds")
+        
+        self.C = C
+        return C
+    
+    def evaluate_chebyshev_basis(self, point):
+        """
+        Evaluate Chebyshev basis at a point.
+        
+        Parameters:
+        -----------
+        point : tuple
+            Point in parameter space at which to evaluate
+            
+        Returns:
+        --------
+        list
+            List of vectors containing Chebyshev polynomial values for each dimension
+        """
+        # Handle single point in 1D case
+        if isinstance(point, (int, float)) and self.dims == 1:
+            point = (point,)
+        
+        # Map point to [-1, 1]^d
+        z = []
+        for i, (a, b) in enumerate(self.domains):
+            p = point[i]
+            z.append(2.0 * (p - a) / (b - a) - 1.0)
+        
+        # Evaluate Chebyshev polynomials at mapped point
+        T_vectors = []
+        for dim, z_val in enumerate(z):
+            T_dim = np.zeros(self.degrees[dim] + 1)
+            for j in range(self.degrees[dim] + 1):
+                T_dim[j] = self._chebyshev_polynomial(j, z_val)
+            T_vectors.append(T_dim)
+        
+        return T_vectors
+    
+    def evaluate_interpolation(self, point):
+        """
+        Evaluate the hybrid interpolation at a point.
+        
+        Parameters:
+        -----------
+        point : tuple
+            Point in parameter space at which to evaluate
+            
+        Returns:
+        --------
+        float
+            Interpolated value
+        """
+        if self.C is None:
+            raise ValueError("Coefficients not constructed. Run offline phase first.")
+        
+        # Handle single point in 1D case
+        if isinstance(point, (int, float)) and self.dims == 1:
+            point = (point,)
+        
+        # Check if point is in spline region for any dimension
+        for dim in range(self.dims):
+            if self.dims == 1:
+                p = point[0]
+                for lower, upper, spline in self.spline_regions[dim]:
+                    if lower <= p <= upper:
+                        # In spline region - use spline
+                        return spline(p)
+        
+        # Not in any spline region - use Chebyshev
+        T_vectors = self.evaluate_chebyshev_basis(point)
+        
+        # Compute interpolated value as inner product <C, T_p>
+        result = self.C.copy()
+        
+        # Successively contract along each dimension
+        for dim, vec in enumerate(T_vectors):
+            result = np.tensordot(result, vec, axes=([0], [0]))
+        
+        return result
+    
+    def evaluate_batch(self, points):
+        """
+        Evaluate the hybrid interpolation at multiple points.
+        
+        Parameters:
+        -----------
+        points : list of tuples or array
+            Points in parameter space at which to evaluate
+            
+        Returns:
+        --------
+        numpy.ndarray
+            Interpolated values
+        """
+        if self.C is None:
+            raise ValueError("Coefficients not constructed. Run offline phase first.")
+        
+        # Special case for 1D
+        if self.dims == 1 and isinstance(points[0], (int, float)):
+            points = [(p,) for p in points]
+        
+        # Process multiple points
+        results = np.zeros(len(points))
+        
+        for i, point in enumerate(points):
+            results[i] = self.evaluate_interpolation(point)
+            
+        return results
+    
+    def run_offline_phase(self, ref_method, subset_size=None):
+        """
+        Run the complete offline phase.
+        
+        Parameters:
+        -----------
+        ref_method : callable
+            Reference method that takes a point and returns a value.
+        subset_size : int or None
+            Size of the subset of Chebyshev nodes to evaluate. If None,
+            evaluate at all nodes.
+            
+        Returns:
+        --------
+        numpy.ndarray
+            Tensor C with Chebyshev coefficients.
+        """
+        print("=== OFFLINE PHASE ===")
+        overall_start = time.time()
+        
+        # Generate subset of indices if specified
+        if subset_size is not None:
+            # Generate all possible indices
+            all_indices = list(product(*[range(d + 1) for d in self.degrees]))
+            total_points = len(all_indices)
+            
+            if subset_size >= total_points:
+                subset_indices = all_indices
+            else:
+                # Randomly sample indices
+                np.random.seed(42)
+                sample_idx = np.random.choice(total_points, size=subset_size, replace=False)
+                subset_indices = [all_indices[i] for i in sample_idx]
+        else:
+            subset_indices = None
+        
+        # Construct tensor P
+        self.P = self.construct_tensor_P(ref_method, subset_indices)
+        
+        # Construct tensor C
+        self.C = self.construct_tensor_C()
+        
+        overall_elapsed = time.time() - overall_start
+        print(f"Offline phase completed in {overall_elapsed:.2f} seconds")
+        
+        return self.C
+
+
+def test_hybrid_interpolation():
+    """
+    Test the hybrid interpolation with a call option payoff and Black-Scholes prices.
+    """
+    # Define call option payoff function
+    def call_payoff(S, K=100):
+        """Call option payoff function"""
+        if isinstance(S, tuple):
+            S = S[0]
+        return max(0, S - K)
+    
+    # Define Black-Scholes call option price
+    def black_scholes_call(S, K=100, T=1.0, r=0.05, sigma=0.2):
+        """Black-Scholes call option price"""
+        from scipy.stats import norm
+        
+        if isinstance(S, tuple):
+            S = S[0]
+            
+        if T <= 0:
+            return call_payoff(S, K)
+            
+        d1 = (np.log(S/K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+        d2 = d1 - sigma * np.sqrt(T)
+        
+        return S * norm.cdf(d1) - K * np.exp(-r*T) * norm.cdf(d2)
+    
+    # Domain and parameters
+    domain = [(50, 150)]  # S in [50, 150]
+    K = 100  # Strike price
+   
