@@ -1,0 +1,411 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from test import TensorTrain, ChebyshevInterpolation
+from rttc_implementation import RTTC
+
+def integrate_rttc_with_chebyshev():
+    """
+    Example of integrating RTTC with ChebyshevInterpolation for American option pricing.
+    This follows the approach described in the paper "Low-rank tensor approximation 
+    for Chebyshev interpolation in parametric option pricing".
+    """
+    # Step 1: Create a mock American option pricing function
+    # This simulates the reference pricing method from Section 3.1 of the paper
+    def mock_american_option_pricing(params):
+        """
+        Mock function for American option pricing in Heston model.
+        In a real implementation, this would be your PDE solver.
+        
+        Parameters:
+        -----------
+        params : tuple
+            (K, ρ, σ, κ, θ) - strike, correlation, volatility of volatility, 
+            mean reversion rate, long-term mean
+            
+        Returns:
+        --------
+        float
+            Option price
+        """
+        K, rho, sigma, kappa, theta = params
+        
+        # Simple placeholder function that mimics option price behavior
+        return 0.5 + 0.1*K - 0.2*rho + 0.3*sigma + 0.15*kappa + 0.25*theta + 0.1*K*sigma*theta
+    
+    # Step 2: Define parameter domains and interpolation degrees
+    domains = [
+        (2, 4),      # K (strike)
+        (-1, 1),     # ρ (correlation)
+        (0.2, 0.5),  # σ (volatility of volatility)
+        (1, 2),      # κ (mean reversion rate)
+        (0.05, 0.2)  # θ (long-term mean)
+    ]
+    degrees = [4, 4, 4, 4, 4]  # Degrees of Chebyshev polynomials
+    
+    # Step 3: Create the Chebyshev interpolation object
+    cheb = ChebyshevInterpolation(domains, degrees)
+    
+    # Step 4: Setup for the offline phase
+    # The shape of tensor P will be (degrees[0]+1, degrees[1]+1, ..., degrees[d-1]+1)
+    tensor_shape = tuple(d + 1 for d in degrees)
+    
+    # Define reference method for RTTC
+    def reference_method(idx):
+        """Convert grid indices to parameters and compute option price"""
+        params = tuple(cheb.points[dim][idx[dim]] for dim in range(len(domains)))
+        return mock_american_option_pricing(params)
+    
+    print(f"Total grid points for full tensor: {np.prod(tensor_shape)}")
+    
+    # Step 5: Offline phase - Run tensor completion using RTTC
+    print("\nOffline Phase - Step 2: Computing reference prices at Chebyshev nodes")
+    print("Using tensor completion to compute tensor P efficiently...")
+    
+    # Initialize RTTC
+    rttc = RTTC(TensorTrain)
+    
+    # Run adaptive sampling to complete tensor P
+    start_time = time.time()
+    
+    P_completed = rttc.adaptive_sampling_strategy1(
+        reference_method, 
+        tensor_shape,
+        max_sample_percentage=0.05,  # Use at most 5% of grid points
+        initial_sample_size=100,      
+        test_size=50,
+        max_rank=5, 
+        tol=1e-4, 
+        max_iter=30, 
+        verbose=True
+    )
+    
+    completion_time = time.time() - start_time
+    print(f"Tensor completion completed in {completion_time:.2f} seconds")
+    
+    # Store the completed tensor in the Chebyshev interpolation object
+    cheb.P = P_completed
+    
+    # Step 6: Offline phase - Compute Chebyshev coefficients
+    print("\nOffline Phase - Step 4: Computing Chebyshev coefficients")
+    start_time = time.time()
+    
+    # Construct tensor C containing Chebyshev coefficients
+    cheb.construct_tensor_C()
+    
+    coefficients_time = time.time() - start_time
+    print(f"Coefficient computation completed in {coefficients_time:.2f} seconds")
+    
+    # Step 7: Online phase - Evaluate interpolated prices at new parameter values
+    print("\nOnline Phase - Evaluating interpolated prices")
+    
+    # Generate test points
+    num_test_points = 20
+    test_params = []
+    
+    for _ in range(num_test_points):
+        params = []
+        for domain in domains:
+            params.append(np.random.uniform(domain[0], domain[1]))
+        test_params.append(tuple(params))
+    
+    # Compute exact and interpolated prices
+    exact_prices = []
+    interp_prices = []
+    exact_time = 0
+    interp_time = 0
+    
+    for params in test_params:
+        # Exact computation
+        start_time = time.time()
+        exact = mock_american_option_pricing(params)
+        exact_time += time.time() - start_time
+        
+        # Interpolation
+        start_time = time.time()
+        interp = cheb.evaluate_interpolation(params)
+        interp_time += time.time() - start_time
+        
+        exact_prices.append(exact)
+        interp_prices.append(interp)
+    
+    # Calculate errors
+    abs_errors = np.abs(np.array(exact_prices) - np.array(interp_prices))
+    rel_errors = abs_errors / np.abs(np.array(exact_prices))
+    
+    # Print results
+    print("\nResults:")
+    print(f"Mean absolute error: {np.mean(abs_errors):.6e}")
+    print(f"Maximum absolute error: {np.max(abs_errors):.6e}")
+    print(f"Mean relative error: {np.mean(rel_errors)*100:.6f}%")
+    
+    print("\nPerformance:")
+    print(f"Average time per exact computation: {exact_time/num_test_points*1000:.3f} ms")
+    print(f"Average time per interpolation: {interp_time/num_test_points*1000:.3f} ms")
+    print(f"Speed-up factor: {exact_time/interp_time:.1f}x")
+    
+    # Step 8: Visualize results
+    plt.figure(figsize=(15, 10))
+    
+    # Plot exact vs interpolated prices
+    plt.subplot(221)
+    plt.scatter(exact_prices, interp_prices, alpha=0.7)
+    plt.plot([min(exact_prices), max(exact_prices)], [min(exact_prices), max(exact_prices)], 'r--')
+    plt.xlabel('Exact Price')
+    plt.ylabel('Interpolated Price')
+    plt.title('Exact vs Interpolated Prices')
+    plt.grid(True)
+    
+    # Plot absolute errors
+    plt.subplot(222)
+    plt.bar(range(num_test_points), abs_errors)
+    plt.axhline(np.mean(abs_errors), color='r', linestyle='--', label=f'Mean: {np.mean(abs_errors):.6f}')
+    plt.xlabel('Test Point')
+    plt.ylabel('Absolute Error')
+    plt.title('Absolute Errors')
+    plt.legend()
+    plt.grid(True)
+    
+    # Plot relative errors
+    plt.subplot(223)
+    plt.bar(range(num_test_points), rel_errors * 100)
+    plt.axhline(np.mean(rel_errors) * 100, color='r', linestyle='--', label=f'Mean: {np.mean(rel_errors)*100:.6f}%')
+    plt.xlabel('Test Point')
+    plt.ylabel('Relative Error (%)')
+    plt.title('Relative Errors')
+    plt.legend()
+    plt.grid(True)
+    
+    # Plot timing comparison
+    plt.subplot(224)
+    methods = ['Exact', 'Interpolation']
+    times = [exact_time/num_test_points*1000, interp_time/num_test_points*1000]
+    plt.bar(methods, times)
+    plt.ylabel('Time per Evaluation (ms)')
+    plt.title(f'Performance Comparison (Speed-up: {exact_time/interp_time:.1f}x)')
+    plt.grid(True)
+    
+    plt.tight_layout()
+    plt.show()
+
+
+def basket_option_pricing_with_rttc():
+    """
+    Example of using RTTC for basket option pricing in the Black-Scholes model.
+    This follows Section 3.2 of the paper "Low-rank tensor approximation for 
+    Chebyshev interpolation in parametric option pricing".
+    """
+    # Import time for performance measurement
+    import time
+    
+    # Step 1: Define a simplified basket option pricing function
+    def mock_basket_option_pricing(initial_prices, strike=1.0, r=0, T=0.25, sigma=0.2, weights=None):
+        """
+        Mock function for basket option pricing in Black-Scholes model.
+        
+        Parameters:
+        -----------
+        initial_prices : tuple
+            Initial stock prices.
+        strike : float
+            Strike price.
+        r : float
+            Risk-free rate.
+        T : float
+            Time to maturity.
+        sigma : float
+            Volatility.
+        weights : list or None
+            Weights for stocks in the basket. Equal weights if None.
+            
+        Returns:
+        --------
+        float
+            Option price.
+        """
+        d = len(initial_prices)
+        
+        if weights is None:
+            weights = [1.0/d] * d
+            
+        # Simplified basket option price formula
+        weighted_sum = sum(w * S0 for w, S0 in zip(weights, initial_prices))
+        vol_term = sigma * np.sqrt(T) * np.sqrt(sum(w**2 for w in weights))
+        
+        # Approximate price (not accurate, just for demonstration)
+        intrinsic = max(0, weighted_sum - strike)
+        time_value = 0.4 * vol_term * weighted_sum
+        
+        return intrinsic + time_value
+    
+    # Step 2: Define the dimension (number of assets)
+    d = 10  # Using a smaller value for demonstration
+    
+    # Step 3: Define domains and interpolation degrees
+    domains = [(1.0, 1.5)] * d  # Initial price of each asset in [1.0, 1.5]
+    degrees = [3] * d  # Using smaller degrees for demonstration
+    
+    # Step 4: Create the Chebyshev interpolation object
+    cheb = ChebyshevInterpolation(domains, degrees)
+    
+    # Step 5: Setup for the offline phase
+    tensor_shape = tuple(deg + 1 for deg in degrees)
+    total_points = np.prod(tensor_shape)
+    
+    print(f"Basket option pricing with {d} assets")
+    print(f"Total grid points for full tensor: {total_points}")
+    
+    # Define reference method for RTTC
+    def reference_method(idx):
+        """Convert grid indices to parameters and compute option price"""
+        params = tuple(cheb.points[dim][idx[dim]] for dim in range(d))
+        return mock_basket_option_pricing(params)
+    
+    # Step 6: Offline phase - Run tensor completion using RTTC
+    print("\nOffline Phase - Running tensor completion...")
+    
+    # Initialize RTTC
+    rttc = RTTC(TensorTrain)
+    
+    # Run adaptive sampling to complete tensor P
+    start_time = time.time()
+    
+    # For high dimensions, we need a very small sampling percentage
+    # The paper mentions using less than 0.001% for d=25
+    max_sample_percentage = min(0.01, 1000 / total_points)
+    
+    P_completed = rttc.adaptive_sampling_strategy1(
+        reference_method, 
+        tensor_shape,
+        max_sample_percentage=max_sample_percentage,
+        initial_sample_size=min(500, int(0.0001 * total_points)),
+        test_size=50,
+        max_rank=4, 
+        tol=1e-3, 
+        max_iter=20, 
+        verbose=True
+    )
+    
+    completion_time = time.time() - start_time
+    print(f"Tensor completion completed in {completion_time:.2f} seconds")
+    
+    # Store the completed tensor in the Chebyshev interpolation object
+    cheb.P = P_completed
+    
+    # Step 7: Offline phase - Compute Chebyshev coefficients
+    print("\nOffline Phase - Computing Chebyshev coefficients...")
+    start_time = time.time()
+    
+    # Construct tensor C containing Chebyshev coefficients
+    cheb.construct_tensor_C()
+    
+    coefficients_time = time.time() - start_time
+    print(f"Coefficient computation completed in {coefficients_time:.2f} seconds")
+    
+    # Step 8: Online phase - Evaluate interpolated prices at new parameter values
+    print("\nOnline Phase - Evaluating interpolated prices...")
+    
+    # Generate test points
+    num_test_points = 20
+    test_params = []
+    
+    for _ in range(num_test_points):
+        params = []
+        for domain in domains:
+            params.append(np.random.uniform(domain[0], domain[1]))
+        test_params.append(tuple(params))
+    
+    # Compute exact and interpolated prices
+    exact_prices = []
+    interp_prices = []
+    exact_time = 0
+    interp_time = 0
+    
+    for params in test_params:
+        # Exact computation
+        start_time = time.time()
+        exact = mock_basket_option_pricing(params)
+        exact_time += time.time() - start_time
+        
+        # Interpolation
+        start_time = time.time()
+        interp = cheb.evaluate_interpolation(params)
+        interp_time += time.time() - start_time
+        
+        exact_prices.append(exact)
+        interp_prices.append(interp)
+    
+    # Calculate errors
+    abs_errors = np.abs(np.array(exact_prices) - np.array(interp_prices))
+    rel_errors = abs_errors / np.abs(np.array(exact_prices))
+    
+    # Print results
+    print("\nResults:")
+    print(f"Mean absolute error: {np.mean(abs_errors):.6e}")
+    print(f"Maximum absolute error: {np.max(abs_errors):.6e}")
+    print(f"Mean relative error: {np.mean(rel_errors)*100:.6f}%")
+    
+    print("\nPerformance:")
+    print(f"Average time per exact computation: {exact_time/num_test_points*1000:.3f} ms")
+    print(f"Average time per interpolation: {interp_time/num_test_points*1000:.3f} ms")
+    print(f"Speed-up factor: {exact_time/interp_time:.1f}x")
+    
+    # Step 9: Visualize results
+    plt.figure(figsize=(15, 10))
+    
+    # Plot exact vs interpolated prices
+    plt.subplot(221)
+    plt.scatter(exact_prices, interp_prices, alpha=0.7)
+    plt.plot([min(exact_prices), max(exact_prices)], [min(exact_prices), max(exact_prices)], 'r--')
+    plt.xlabel('Exact Price')
+    plt.ylabel('Interpolated Price')
+    plt.title('Exact vs Interpolated Prices')
+    plt.grid(True)
+    
+    # Plot absolute errors
+    plt.subplot(222)
+    plt.bar(range(num_test_points), abs_errors)
+    plt.axhline(np.mean(abs_errors), color='r', linestyle='--', label=f'Mean: {np.mean(abs_errors):.6f}')
+    plt.xlabel('Test Point')
+    plt.ylabel('Absolute Error')
+    plt.title('Absolute Errors')
+    plt.legend()
+    plt.grid(True)
+    
+    # Plot relative errors
+    plt.subplot(223)
+    plt.bar(range(num_test_points), rel_errors * 100)
+    plt.axhline(np.mean(rel_errors) * 100, color='r', linestyle='--', label=f'Mean: {np.mean(rel_errors)*100:.6f}%')
+    plt.xlabel('Test Point')
+    plt.ylabel('Relative Error (%)')
+    plt.title('Relative Errors')
+    plt.legend()
+    plt.grid(True)
+    
+    # Plot timing comparison
+    plt.subplot(224)
+    methods = ['Exact', 'Interpolation']
+    times = [exact_time/num_test_points*1000, interp_time/num_test_points*1000]
+    plt.bar(methods, times)
+    plt.ylabel('Time per Evaluation (ms)')
+    plt.title(f'Performance Comparison (Speed-up: {exact_time/interp_time:.1f}x)')
+    plt.yscale('log')
+    plt.grid(True)
+    
+    plt.tight_layout()
+    plt.show()
+
+
+if __name__ == "__main__":
+    # Import time for benchmarking
+    import time
+    
+    # Run examples
+    print("=" * 80)
+    print("Example 1: American Option Pricing with RTTC")
+    print("=" * 80)
+    integrate_rttc_with_chebyshev()
+    
+    print("\n" + "=" * 80)
+    print("Example 2: Basket Option Pricing with RTTC")
+    print("=" * 80)
+    basket_option_pricing_with_rttc()
