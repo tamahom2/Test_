@@ -1,0 +1,68 @@
+def _project_onto_tangent_space(self, X, Z):
+        """
+        Project a tensor Z onto the tangent space at X.
+        
+        This implements the tangent space projection as described in Section 3.3
+        of the Steinlechner paper.
+        
+        Parameters:
+        -----------
+        X : TensorTrain
+            Point on the manifold.
+        Z : TensorTrain
+            Tensor to project.
+            
+        Returns:
+        --------
+        TensorTrain
+            Projected tensor in TT format.
+        """
+        # The projection is performed by fixing the gauge conditions
+        # For a TT tensor with left-orthogonalized cores, the gauge condition
+        # requires that each core (except the last) is orthogonal to the range
+        # of the previous core's left unfolding
+        
+        d = len(X.shape)
+        
+        # First ensure X is left-orthogonalized
+        X_ortho = self._left_orthogonalize(X.copy())
+        
+        # Create a copy of Z to modify
+        projected_cores = []
+        
+        # The first core has no gauge condition, so we keep it as is
+        projected_cores.append(Z.cores[0].copy())
+        
+        # Process the middle cores (1 to d-2)
+        for mu in range(1, d-1):
+            # Get the current core
+            core = Z.cores[mu].copy()
+            r_left, n, r_right = core.shape
+            
+            # Get the previous left-orthogonalized core
+            prev_core = X_ortho.cores[mu-1]
+            prev_r_left, prev_n, prev_r_right = prev_core.shape
+            
+            # For each slice of the core
+            for i in range(n):
+                core_slice = core[:, i, :].reshape(r_left, r_right)
+                
+                # Project out the component in the range of the previous core
+                # First, get the left unfolding of the previous core
+                prev_left_unfolding = prev_core.reshape(prev_r_left * prev_n, prev_r_right)
+                
+                # Compute the projection operator
+                P = np.eye(r_left) - prev_left_unfolding @ np.linalg.pinv(prev_left_unfolding)
+                
+                # Apply the projection
+                core_slice_projected = P @ core_slice
+                
+                # Update the core
+                core[:, i, :] = core_slice_projected.reshape(r_left, r_right)
+            
+            projected_cores.append(core)
+        
+        # The last core has no right gauge condition, so we keep it as is
+        projected_cores.append(Z.cores[d-1].copy())
+        
+        return self.TensorTrain(projected_cores)
