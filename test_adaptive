@@ -1,0 +1,212 @@
+"""
+Adaptive Sampling + Adaptive Rank (Glau et al. 2019, Alg. 1 & 2)
+================================================================
+This script provides a **self-contained, TTML-compatible** implementation of
+
+* **Algorithm 1** — Adaptive rank selection via Riemannian CG (RTTC)
+* **Algorithm 2** — Adaptive sampling strategy 1
+
+The implementation follows the pseudo-code lines verbatim (see PDF snippet).
+The TT-rank vector is represented by its **internal ranks** `r = (r₁,…,r_{d-1})`
+(boundary ranks are always `1` in TTML).  All index arrays use the
+**(m, d)** convention required by `TensorTrain.gather`.
+"""
+from __future__ import annotations
+import math, sys, types
+from typing import List, Tuple, Sequence, Set
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TTML imports
+# ──────────────────────────────────────────────────────────────────────────────
+from ttml.tensor_train import TensorTrain
+from ttml.tt_rlinesearch import TensorTrainLineSearch
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Helper: dense → TT via TT-SVD (if library doesn’t provide one)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _tt_from_tensor(tensor: np.ndarray, *, eps: float = 1e-10, max_rank: int | None = None) -> TensorTrain:  # noqa: E501
+    """TT-SVD conversion with threshold `eps` (Alg. 1 Oseledets 2011)."""
+    d = tensor.ndim
+    n = tensor.shape
+    ranks: List[int] = [1]
+    cores: List[np.ndarray] = []
+    curr = tensor.reshape(1, -1)
+    for k in range(d - 1):
+        curr = curr.reshape(ranks[k] * n[k], -1)
+        u, s, vh = np.linalg.svd(curr, full_matrices=False)
+        thresh = eps / math.sqrt(d - 1) * np.linalg.norm(s)
+        r_next = int(np.sum(s > thresh))
+        if max_rank is not None:
+            r_next = min(r_next, max_rank)
+        r_next = max(r_next, 1)
+        ranks.append(r_next)
+        cores.append(u[:, :r_next].reshape(ranks[k], n[k], r_next))
+        curr = (np.diag(s[:r_next]) @ vh[:r_next]).copy()
+    ranks.append(1)
+    cores.append(curr.reshape(ranks[-2], n[-1], 1))
+    return TensorTrain(cores)
+
+if not hasattr(TensorTrain, "from_tensor"):
+    TensorTrain.from_tensor = staticmethod(_tt_from_tensor)  # type: ignore[attr-defined]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Utilities
+# ──────────────────────────────────────────────────────────────────────────────
+
+def random_multi_indices(dims: Sequence[int], m: int, *, exclude: Set[Tuple[int, ...]] | None = None) -> np.ndarray:
+    """Return **(m, d)** unique indices."""
+    exclude = set(exclude or [])
+    rng = np.random.default_rng()
+    picks: List[Tuple[int, ...]] = []
+    d = len(dims)
+    while len(picks) < m:
+        cand = tuple(rng.integers(0, dim, endpoint=False) for dim in dims)
+        if cand not in exclude:
+            exclude.add(cand)
+            picks.append(cand)
+    return np.array(picks, dtype=int)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Riemannian CG until local convergence
+# ──────────────────────────────────────────────────────────────────────────────
+
+def run_rttc(tt: TensorTrain, y: np.ndarray, idx: np.ndarray, tol: float = 1e-6, max_iter: int = 200) -> Tuple[TensorTrain, float]:
+    optim = TensorTrainLineSearch(tt, y, idx, task="regression", cg_method="fr", line_search_method="armijo")
+    for _ in range(max_iter):
+        _, gnorm, _ = optim.step()
+        if gnorm < tol:
+            break
+    resid = float(np.linalg.norm(optim.tt.gather(idx) - y) / np.linalg.norm(y))
+    return optim.tt, resid
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Algorithm 1 — adaptive rank (fixed Ω, Ω_C)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def adaptive_rttc(
+    dims: Tuple[int, ...],
+    idx: np.ndarray,
+    y: np.ndarray,
+    *,
+    r_max: int = 8,
+    rho: float = 1e-3,
+    tol_cg: float = 1e-6,
+    init_tt: TensorTrain | None = None,
+) -> Tuple[TensorTrain, List[Tuple[List[int], float]]]:
+    d = len(dims)
+    ranks: List[int] = [1] * (d - 1)  # internal ranks (length d-1)
+    X = init_tt if init_tt is not None else TensorTrain.random(dims, ranks)
+    X, eps = run_rttc(X, y, idx, tol=tol_cg)
+    history: List[Tuple[List[int], float]] = [([1] + ranks + [1], eps)]
+    locked, core = 0, 0  # core index 0..d-2
+    while locked < d - 1 and max(ranks) < r_max:
+        if ranks[core] >= r_max:
+            core = (core + 1) % (d - 1)
+            continue
+        proposal = ranks.copy(); proposal[core] += 1
+        X_new = X.round(tuple(proposal))
+        X_new, eps_new = run_rttc(X_new, y, idx, tol=tol_cg)
+        if eps_new <= eps - rho:  # accept
+            X, eps, ranks, locked = X_new, eps_new, proposal, 0
+        else:                     # reject
+            locked += 1
+        history.append(([1] + ranks + [1], eps))
+        core = (core + 1) % (d - 1)
+    return X, history
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Algorithm 2 — adaptive sampling strategy 1
+# ──────────────────────────────────────────────────────────────────────────────
+
+def adaptive_sampling_rttc(
+    oracle,                          # function(idx) -> values
+    dims: Tuple[int, ...],
+    *,
+    r_max: int = 8,
+    rho: float = 1e-3,
+    p_max: float = 0.25,
+    m_test: int = 2000,
+    tol_abs: float = 1e-4,
+    tol_rel: float = 1e-4,
+) -> Tuple[TensorTrain, List[Tuple[int, float, List[int]]]]:
+    full_size = int(np.prod(dims))
+    # 1. initialise Ω (1% of grid) & test set Ω_C (disjoint)
+    m_init = max(int(0.01 * full_size), 20)
+    Ω = random_multi_indices(dims, m_init)
+    set_Ω = {tuple(row) for row in Ω}
+    Ω_C = random_multi_indices(dims, m_test, exclude=set_Ω)
+    y_Ω = oracle(Ω)
+
+    # 2–3. run Alg.1, compute err_new
+    X_c, hist_rank = adaptive_rttc(dims, Ω, y_Ω, r_max=r_max, rho=rho)
+    err_new = float(np.linalg.norm(X_c.gather(Ω_C) - oracle(Ω_C)) / np.linalg.norm(oracle(Ω_C)))
+    history: List[Tuple[int, float, List[int]]] = [(len(set_Ω), err_new, hist_rank[-1][0])]
+
+    # main loop (line 5)
+    while len(set_Ω) / full_size < p_max:
+        err_old = err_new
+        # 6. rank-1 warm start
+        X_tilde = X_c.round(max_rank=1)
+        # 7. Ω_C_old ← Ω_C
+        Ω_C_old = Ω_C
+        # 9. Ω ← Ω ∪ Ω_C_old
+        for tup in map(tuple, Ω_C_old):
+            set_Ω.add(tup)
+        Ω = np.array(list(set_Ω))
+        y_Ω = oracle(Ω)
+        # 8. create new test set Ω_C_new (disjoint)
+        Ω_C = random_multi_indices(dims, m_test, exclude=set_Ω)
+        # 10–11. run Alg.1 with warm-start
+        X_c, hist_rank = adaptive_rttc(dims, Ω, y_Ω, r_max=r_max, rho=rho, init_tt=X_tilde)
+        mu_final = hist_rank[-1][0]
+        # 12. err_new on Ω_C
+        err_new = float(np.linalg.norm(X_c.gather(Ω_C) - oracle(Ω_C)) / np.linalg.norm(oracle(Ω_C)))
+        history.append((len(set_Ω), err_new, mu_final))
+        print(f"|Ω|={len(set_Ω):5d}, err={err_new:.2e}, μ={mu_final[1:-1]}")
+        # 13. stopping tests
+        if err_new < tol_abs:
+            print("Stop: abs tolerance reached"); break
+        if abs(err_new - err_old) < tol_rel:
+            print("Stop: err stagnation"); break
+        if max(mu_final[1:-1]) >= r_max:
+            print("Stop: rank reached r_max"); break
+    return X_c, history
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Demo
+# ──────────────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    # Synthetic truth tensor f(x) = exp(-||x||)
+    d, n = 8, 6
+    dims = (n,) * d
+    grid = np.stack(np.meshgrid(*[np.linspace(0, 1, n) for _ in range(d)], indexing="ij"), -1)
+    f_dense = np.exp(-np.linalg.norm(grid.reshape(-1, d), axis=1)).reshape(dims)
+    truth_tt = TensorTrain.from_tensor(f_dense, eps=1e-10, max_rank=7)  # type: ignore[arg-type]
+
+    def oracle(idx: np.ndarray) -> np.ndarray:               # shape (m,d)
+        return truth_tt.gather(idx)
+
+    X_hat, hist = adaptive_sampling_rttc(
+        oracle,
+        dims,
+        r_max=7,
+        rho=1e-4,
+        p_max=0.1,
+        m_test=1500,
+        tol_abs=1e-4,
+        tol_rel=1e-4,
+    )
+
+    # Plot convergence
+    ratios = [h[0] / np.prod(dims) for h in hist]
+    errs = [h[1] for h in hist]
+    plt.figure(); plt.plot(ratios, errs, "-o"); plt.yscale("log");
+    plt.xlabel("sampling ratio |Ω| / |A|"); plt.ylabel("relative error on Ω_C");
+    plt.title("Adaptive sampling (Alg. 2)"); plt.tight_layout(); plt.show()
+
+    print(f"Final μ = {hist[-1][2]},  ratio={ratios[-1]:.3f},  error={errs[-1]:.2e}")
