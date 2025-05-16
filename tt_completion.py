@@ -1,955 +1,536 @@
 import numpy as np
-from scipy.sparse.linalg import LinearOperator, cg
+from copy import deepcopy
 import time
-import matplotlib.pyplot as plt
 
-class TTCompletion:
+
+def euclidgrad(A_Omega, X, Omega):
     """
-    Implementation of tensor completion in TT format using Riemannian optimization.
-    Based on the papers:
-    - "Riemannian optimization for high-dimensional tensor completion" by Steinlechner
-    - "Low-rank tensor approximation for Chebyshev interpolation in parametric option pricing" by Glau, Kressner, and Statti
-    """
-    def __init__(self, tensor_train_class):
-        """
-        Initialize the TTCompletion class.
-        
-        Parameters:
-        -----------
-        tensor_train_class : class
-            The TensorTrain class to use for tensor operations.
-        """
-        self.TensorTrain = tensor_train_class
+    Compute Euclidean gradient from residuals.
     
-    def complete_tensor(self, sample_indices, sample_values, tensor_shape, 
-                        initial_rank=(1,), max_rank=10, tol=1e-4, tol_stagnation=1e-4, 
-                        max_iter=100, rho=0, verbose=True):
-        """
-        Complete a tensor from a subset of its entries using Riemannian optimization.
+    Parameters
+    ----------
+    A_Omega : ndarray
+        Known values of the tensor
+    X : TensorTrain
+        Current tensor train approximation
+    Omega : ndarray
+        Indices of known values
+    
+    Returns
+    -------
+    ndarray
+        Euclidean gradient values
+    """
+    return X.gather(Omega) - A_Omega
+
+
+def func(A_Omega, X, Omega):
+    """
+    Cost function for tensor completion.
+    
+    Parameters
+    ----------
+    A_Omega : ndarray
+        Known values of the tensor
+    X : TensorTrain
+        Current tensor train approximation
+    Omega : ndarray
+        Indices of known values
+    
+    Returns
+    -------
+    float
+        Value of the cost function (1/2 * squared Frobenius norm of error)
+    """
+    diff = X.gather(Omega) - A_Omega
+    return 0.5 * np.linalg.norm(diff)**2
+
+
+def completion(A_Omega, Omega, A_Gamma=None, Gamma=None, X0=None, opts=None):
+    """
+    Core optimization function for TT completion using Riemannian optimization.
+    
+    This implements a Riemannian optimization approach for tensor train completion
+    based on the GeomCG algorithm from the paper:
+    "Riemannian Optimization for High-Dimensional Tensor Completion"
+    by M. Steinlechner.
+    
+    Parameters
+    ----------
+    A_Omega : ndarray
+        Known values of the tensor
+    Omega : ndarray
+        Indices of known values
+    A_Gamma : ndarray, optional
+        Test set values (for validation)
+    Gamma : ndarray, optional
+        Indices of test set
+    X0 : TensorTrain
+        Initial guess tensor train
+    opts : dict
+        Options for the algorithm including:
+        - maxiter : Maximum number of iterations (default: 100)
+        - cg : Whether to use conjugate gradient (default: True)
+        - tol : Tolerance for convergence (default: 1e-6)
+        - reltol : Relative tolerance for convergence (default: 1e-8)
+        - gradtol : Gradient norm tolerance (default: 10*eps)
+        - verbose : Whether to print progress (default: False)
+    
+    Returns
+    -------
+    X : TensorTrain
+        Completed tensor train
+    cost : ndarray
+        Cost function values during optimization
+    test : ndarray or None
+        Test error values during optimization
+    stats : dict
+        Additional statistics from the optimization
+    """
+    # Set default options
+    if opts is None:
+        opts = {}
+    maxiter = opts.get('maxiter', 100)
+    use_cg = opts.get('cg', True)
+    tol = opts.get('tol', 1e-6)
+    reltol = opts.get('reltol', 1e-8)
+    gradtol = opts.get('gradtol', 10 * np.finfo(float).eps)
+    verbose = opts.get('verbose', False)
+    
+    # Initialize variables
+    xL = deepcopy(X0)
+    xR = deepcopy(X0)
+    xR.orthogonalize(mode='r')
+    
+    norm_A_Omega = np.linalg.norm(A_Omega)
+    if A_Gamma is not None and Gamma is not None:
+        norm_A_Gamma = np.linalg.norm(A_Gamma)
+    
+    cost = np.zeros(maxiter)
+    test = np.zeros(maxiter) if A_Gamma is not None and Gamma is not None else None
+    stats = {'gradnorm': np.zeros(maxiter), 'time': [0], 'conv': False}
+    reltol_val = -np.inf
+    
+    # Main optimization loop
+    start_time = time.time()
+    
+    for i in range(maxiter):
+        # Compute Euclidean gradient
+        grad = euclidgrad(A_Omega, xL, Omega)
         
-        Parameters:
-        -----------
-        sample_indices : list of tuples
-            List of indices where the tensor values are known.
-        sample_values : numpy.ndarray
-            Values of the tensor at the sample indices.
-        tensor_shape : tuple
-            Shape of the full tensor to be completed.
-        initial_rank : tuple, optional
-            Initial TT ranks to use for completion.
-        max_rank : int, optional
-            Maximum allowed TT rank.
-        tol : float, optional
-            Tolerance for relative error on the training set.
-        tol_stagnation : float, optional
-            Tolerance for stagnation detection.
-        max_iter : int, optional
-            Maximum number of iterations for each rank.
-        rho : float, optional
-            Acceptance parameter for rank increase.
-        verbose : bool, optional
-            Whether to print progress information.
+        # Project to tangent space
+        xi = xL.rgrad_sparse(grad, Omega)
+        ip_xi_xi = xi.inner(xi)
+        stats['gradnorm'][i] = np.sqrt(abs(ip_xi_xi))
+        
+        # Check gradient norm for convergence
+        if np.sqrt(abs(ip_xi_xi)) < gradtol:
+            if cost[i] < tol:
+                if verbose:
+                    print(f"CONVERGED AFTER {i} STEPS. Gradient is smaller than {gradtol:.3g}")
+                stats['conv'] = True
+            else:
+                if verbose:
+                    print("No more progress in gradient change, but not converged. Aborting!")
+                stats['conv'] = False
             
-        Returns:
-        --------
-        TensorTrain
-            Completed tensor in TT format.
-        """
-        # Setup training and test sets
-        train_indices = sample_indices[:len(sample_indices)//2]
-        train_values = sample_values[:len(sample_indices)//2]
-        test_indices = sample_indices[len(sample_indices)//2:]
-        test_values = sample_values[len(sample_indices)//2:]
-        
-        # Initialize tensor with random cores and initial rank
-        X = self._initialize_random_tt(tensor_shape, initial_rank)
-        
-        # Adaptive rank strategy
-        locked = 0
-        mu = 0  # Mode index for rank increase
-        d = len(tensor_shape)
-        current_tt_ranks = list(initial_rank)
-        
-        while locked < d - 1 and max(current_tt_ranks) < max_rank:
-            # Run Riemannian CG to get current completion
-            X = self._riemannian_cg(X, train_indices, train_values, 
-                                   test_indices, test_values, 
-                                   tol=tol, tol_stagnation=tol_stagnation, 
-                                   max_iter=max_iter, verbose=verbose)
+            # Trim arrays to current iteration
+            cost = cost[:i]
+            if test is not None:
+                test = test[:i]
+            stats['gradnorm'] = stats['gradnorm'][:i]
             
-            # Compute error on test set for current completion
-            err_old = self._relative_error(X, test_indices, test_values)
+            stats['time'].append(stats['time'][-1] + time.time() - start_time)
+            stats['time'] = stats['time'][1:]
             
+            return xL, cost, test, stats
+        
+        # Determine search direction
+        if (i == 0) or (not use_cg):
+            eta = -1 * xi  # Steepest descent
+        else:
+            ip_xitrans_xi = xi_trans.inner(xi)
+            theta = ip_xitrans_xi / ip_xi_xi
+            
+            if theta >= 0.1:
+                if verbose:
+                    print('steepest descent step')
+                eta = -1 * xi  # Steepest descent
+            else:
+                if verbose:
+                    print('CG step')
+                beta = ip_xi_xi / ip_xi_xi_old
+                print(beta.dtype)
+                eta = -1 * xi + float(beta) * xL.grad_proj(eta)  # Conjugate gradient
+        
+        # Line search to determine step size
+        eta_Omega = eta.to_eucl(Omega)
+        alpha = -(np.dot(eta_Omega, grad)) / np.linalg.norm(eta_Omega)**2
+        
+        # Apply update via retraction
+        X = xL.apply_grad(eta, alpha=alpha, round=True, inplace=False)
+        xL = X.orthogonalize(mode=X.order-1, inplace=False)
+        xR = X.orthogonalize(mode=0, inplace=False)
+        
+        # Compute cost
+        cost[i] = np.sqrt(2*func(A_Omega, xL, Omega)) / norm_A_Omega
+        
+        # Check for convergence based on cost
+        if cost[i] < tol:
             if verbose:
-                print(f"Current rank: {current_tt_ranks}, Test error: {err_old:.6e}")
+                print(f"CONVERGED AFTER {i} STEPS. Rel. residual smaller than {tol:.3g}")
+            stats['conv'] = True
+            cost = cost[:i+1]
+            stats['gradnorm'] = stats['gradnorm'][:i+1]
             
-            # Try to increase rank at mode mu
-            if mu < d - 1:  # Don't increase last rank as it's fixed to 1
-                # Create a copy of X with increased rank at mode mu
-                X_new = self._increase_rank(X, mu, current_tt_ranks[mu] + 1)
-                current_tt_ranks[mu] += 1
+            stats['time'].append(stats['time'][-1] + time.time() - start_time)
+            
+            if test is not None and A_Gamma is not None and Gamma is not None:
+                test[i] = np.sqrt(2*func(A_Gamma, xL, Gamma)) / norm_A_Gamma
+                test = test[:i+1]
+            
+            stats['time'] = stats['time'][1:]
+            return xL, cost, test, stats
+        
+        # Check for relative change in cost
+        if i > 0:
+            reltol_val = abs(cost[i] - cost[i-1]) / cost[i]
+            if reltol_val < reltol:
+                if cost[i] < tol:
+                    if verbose:
+                        print(f"CONVERGED AFTER {i} STEPS. Relative change is smaller than {reltol:.3g}")
+                    stats['conv'] = True
+                else:
+                    if verbose:
+                        print("No more progress in relative change, but not converged. Aborting!")
+                    stats['conv'] = False
                 
-                # Run Riemannian CG again with increased rank
-                X_new = self._riemannian_cg(X_new, train_indices, train_values, 
-                                           test_indices, test_values, 
-                                           tol=tol, tol_stagnation=tol_stagnation, 
-                                           max_iter=max_iter, verbose=verbose)
+                cost = cost[:i+1]
+                stats['gradnorm'] = stats['gradnorm'][:i+1]
                 
-                # Compute error on test set for new completion
-                err_new = self._relative_error(X_new, test_indices, test_values)
+                stats['time'].append(stats['time'][-1] + time.time() - start_time)
+                
+                if test is not None and A_Gamma is not None and Gamma is not None:
+                    test[i] = np.sqrt(2*func(A_Gamma, xL, Gamma)) / norm_A_Gamma
+                    test = test[:i+1]
+                
+                stats['time'] = stats['time'][1:]
+                return xL, cost, test, stats
+        
+        # Save for next iteration
+        ip_xi_xi_old = ip_xi_xi
+        xi_trans = xi
+        
+        # Update timing and test error
+        stats['time'].append(stats['time'][-1] + time.time() - start_time)
+        
+        if test is not None and A_Gamma is not None and Gamma is not None:
+            test[i] = np.sqrt(2*func(A_Gamma, xL, Gamma)) / norm_A_Gamma
+        
+        start_time = time.time()
+        
+        if verbose:
+            print(f'k: {i}, cost: {cost[i]}, test: {test[i] if test is not None else "N/A"}, ' 
+                  f'Riem grad: {stats["gradnorm"][i]}, rel_cost {reltol_val}')
+    
+    stats['time'] = stats['time'][1:]
+    return xL, cost, test, stats
+
+
+def evaluate_on_control(X, A_Omega_C, Omega_C):
+    """
+    Evaluate the cost function on a control set.
+    
+    Parameters
+    ----------
+    X : TensorTrain
+        Current tensor train approximation
+    A_Omega_C : ndarray
+        Control set values
+    Omega_C : ndarray
+        Indices of control set
+    
+    Returns
+    -------
+    float
+        Value of the cost function on control set
+    """
+    diff = X.gather(Omega_C) - A_Omega_C
+    return 0.5 * np.linalg.norm(diff)**2
+
+
+def completion_with_rank_adaptation(method, A_Omega, Omega, A_Omega_C, Omega_C, 
+                                   A_Gamma, Gamma, X0, opts=None):
+    """
+    Tensor completion with adaptive rank.
+    
+    This function implements tensor completion with adaptive rank adaptation,
+    iteratively trying to increase the rank of each core and accepting
+    increases that improve performance.
+    
+    Parameters
+    ----------
+    method : str
+        Completion method: 'GeomCG' or 'ALS'
+    A_Omega : ndarray
+        Known values of the tensor
+    Omega : ndarray
+        Indices of known values
+    A_Omega_C : ndarray
+        Control set values
+    Omega_C : ndarray
+        Indices of control set
+    A_Gamma : ndarray
+        Test set values
+    Gamma : ndarray
+        Indices of test set
+    X0 : TensorTrain
+        Initial guess tensor train
+    opts : dict
+        Options for the algorithm including:
+        - maxrank : Maximum rank to try (default: 4)
+        - cg : Whether to use conjugate gradient (default: True)
+        - tol : Tolerance for convergence (default: 1e-6)
+        - reltol : Relative tolerance for convergence (default: 1e-8)
+        - reltol_final : Final relative tolerance (default: eps)
+        - maxiter : Maximum iterations per optimization (default: 10)
+        - maxiter_final : Maximum iterations for final optimization (default: 20)
+        - locked_tol : Tolerance for locking cores (default: 1)
+        - epsilon : Small value for rank increase (default: 1e-8)
+        - verbose : Whether to print progress (default: False)
+    
+    Returns
+    -------
+    X : TensorTrain
+        Completed tensor train
+    cost : ndarray
+        Cost function values during optimization
+    test : ndarray
+        Test error values during optimization
+    stats : dict
+        Additional statistics
+    ranks : list
+        Rank information tracking during optimization
+    """
+    # Set default options
+    if opts is None:
+        opts = {}
+    
+    maxrank = opts.get('maxrank', 4)
+    use_cg = opts.get('cg', True)
+    tol = opts.get('tol', 1e-6)
+    reltol = opts.get('reltol', 1e-8)
+    reltol_final = opts.get('reltol_final', np.finfo(float).eps)
+    maxiter = opts.get('maxiter', 10)
+    maxiter_final = opts.get('maxiter_final', 20)
+    locked_tol = opts.get('locked_tol', 1)
+    epsilon = opts.get('epsilon', 1e-8)
+    verbose = opts.get('verbose', False)
+    
+    # Select completion method
+    if method.lower() == 'geomcg':
+        completion_func = completion
+    elif method.lower() == 'als':
+        # Not implemented in this code, would need to be added
+        raise NotImplementedError("ALS method not implemented")
+    else:
+        raise ValueError(f"Unknown method: {method}")
+    
+    d = X0.order
+    control_old = np.inf
+    
+    # Start timing
+    start_time = time.time()
+    
+    # Initial completion with starting rank
+    if verbose:
+        print('____________________________________________________________________')
+        print(f'Completion with starting rank r = {X0.tt_rank} ...')
+    
+    X, cost, control, stats = completion_func(A_Omega, Omega, A_Gamma, Gamma, X0, opts)
+    
+    # Initialize test array and timing stats
+    if A_Gamma is not None:
+        test = [np.linalg.norm(X0.gather(Gamma) - A_Gamma) / np.linalg.norm(A_Gamma)]
+        test.append(np.linalg.norm(X.gather(Gamma) - A_Gamma) / np.linalg.norm(A_Gamma))
+    else:
+        test = []
+    
+    stats['time'] = [0, time.time() - start_time]
+    ranks = [X0.tt_rank, X.tt_rank]  # Track rank history
+    
+    stats['rankidx'] = len(cost)
+    
+    if verbose:
+        print('____________________________________________________________________')
+        print('Increasing rank ...')
+    
+    # Initialize locked cores array (which cores can no longer increase in rank)
+    locked = np.zeros(d+1, dtype=bool)
+    
+    # Loop over ranks to try increasing
+    for k in range(2, maxrank+1):
+        for i in range(d-1):  # Adjust indices to match Python's 0-indexing for cores
+            if verbose:
+                print(f'Locked cores: {locked}')
+            
+            if locked[i]:
+                if verbose:
+                    print(f'Rank r({i}) is locked. Skipping.')
+            else:
+                curr_rank = X.tt_rank[i-1] if i-1 < len(X.tt_rank) else X.tt_rank[-1]
+                new_rank = curr_rank + 1
                 
                 if verbose:
-                    print(f"Increased rank at mode {mu} to {current_tt_ranks[mu]}, Test error: {err_new:.6e}")
+                    print(f'Trying to increase rank r({i}) from {curr_rank} to {new_rank}:')
+                
+                # Create new TT with increased rank
+                Xnew = X.copy()
+                Xnew.increase_rank(1, i)  # 0-indexed in Python
+                Xnew.orthogonalize()
+                
+                # Adjust max iterations for final rank
+                if i == d-1 and k == maxrank:
+                    opts_copy = opts.copy()
+                    opts_copy['maxiter'] = maxiter_final
+                else:
+                    opts_copy = opts
+                
+                # Run completion with new rank
+                Xnew, cost_tmp, control_tmp, stats_tmp = completion_func(
+                    A_Omega, Omega, A_Omega_C, Omega_C, Xnew, opts_copy)
+                
+                stats['rankidx'] = np.append(stats['rankidx'], len(cost_tmp))
+                
+                if verbose:
+                    print(f'Current cost function: {cost_tmp[-1]}')
+                
+                # Calculate progress on control set
+                new_control = evaluate_on_control(Xnew, A_Omega_C, Omega_C)
+                progress = (new_control - control_old) / control_old
+                
+                if verbose:
+                    print(f'Current rel. progress on control: {progress}')
                 
                 # Accept or reject rank increase
-                if err_new > err_old - rho * err_old:  # No significant improvement
-                    current_tt_ranks[mu] -= 1  # Revert rank increase
-                    locked += 1
+                if progress > locked_tol:
                     if verbose:
-                        print(f"Rank increase rejected. Locked: {locked}/{d-1}")
+                        print('     ... failed. Reverting.')
+                    locked[i] = True
                 else:
-                    X = X_new  # Accept rank increase
-                    locked = 0  # Reset locked counter
                     if verbose:
-                        print(f"Rank increase accepted.")
-            
-            # Move to next mode
-            mu = (mu + 1) % (d - 1)
-        
-        # Final run to ensure convergence
-        X = self._riemannian_cg(X, train_indices, train_values, 
-                               test_indices, test_values, 
-                               tol=tol, tol_stagnation=tol_stagnation, 
-                               max_iter=max_iter, verbose=verbose)
-        
-        return X
-    
-    def adaptive_sampling_strategy1(self, reference_method, tensor_shape, max_sample_percentage=0.1, 
-                                    initial_sample_size=None, test_size=None, 
-                                    max_rank=10, tol=1e-4, tol_stagnation=1e-4, 
-                                    max_iter=100, rho=0, verbose=True):
-        """
-        Adaptive sampling strategy for tensor completion as described in Algorithm 2.
-        
-        Parameters:
-        -----------
-        reference_method : callable
-            Function that computes tensor values at given indices.
-        tensor_shape : tuple
-            Shape of the full tensor to be completed.
-        max_sample_percentage : float, optional
-            Maximum percentage of tensor entries to sample.
-        initial_sample_size : int, optional
-            Initial number of samples to use.
-        test_size : int, optional
-            Number of test samples to use.
-        max_rank : int, optional
-            Maximum allowed TT rank.
-        tol : float, optional
-            Tolerance for relative error on the training set.
-        tol_stagnation : float, optional
-            Tolerance for stagnation detection.
-        max_iter : int, optional
-            Maximum number of iterations for each rank.
-        rho : float, optional
-            Acceptance parameter for rank increase.
-        verbose : bool, optional
-            Whether to print progress information.
-            
-        Returns:
-        --------
-        TensorTrain
-            Completed tensor in TT format.
-        """
-        # Setup initial parameters
-        if initial_sample_size is None:
-            initial_sample_size = 100
-        if test_size is None:
-            test_size = 100
-            
-        # Maximum number of samples based on percentage
-        tensor_size = np.prod(tensor_shape)
-        max_samples = int(max_sample_percentage * tensor_size)
-        
-        # Generate initial random sampling indices
-        train_indices = self._generate_random_indices(tensor_shape, initial_sample_size)
-        train_values = np.array([reference_method(idx) for idx in train_indices])
-        
-        # Generate test set
-        test_indices = self._generate_random_indices(tensor_shape, test_size, exclude=train_indices)
-        test_values = np.array([reference_method(idx) for idx in test_indices])
-        
-        # Initial completion
-        if verbose:
-            print(f"Starting completion with {len(train_indices)} samples ({len(train_indices)/tensor_size*100:.4f}% of tensor)")
-        
-        X = self._initialize_random_tt(tensor_shape, (1,)*len(tensor_shape))
-        X = self.complete_tensor(
-            train_indices, train_values, tensor_shape,
-            initial_rank=(1,)*len(tensor_shape), max_rank=max_rank,
-            tol=tol, tol_stagnation=tol_stagnation,
-            max_iter=max_iter, rho=rho, verbose=verbose
-        )
-        
-        # Compute error on test set
-        err_new = self._relative_error(X, test_indices, test_values)
-        if verbose:
-            print(f"Initial completion error on test set: {err_new:.6e}")
-            
-        # Adaptive sampling
-        while len(train_indices) < max_samples:
-            err_old = err_new
-            
-            # Create rank (1,...,1) approximation of X as starting point
-            X_approx = self._rank1_approximation(X)
-            
-            # Add test set to training set
-            old_test_indices = test_indices
-            train_indices = np.append(train_indices, test_indices, axis=0)
-            train_values = np.append(train_values, test_values)
-            
-            # Generate new test set
-            test_indices = self._generate_random_indices(tensor_shape, test_size, exclude=train_indices)
-            test_values = np.array([reference_method(idx) for idx in test_indices])
-            
-            if verbose:
-                print(f"Expanded training set to {len(train_indices)} samples ({len(train_indices)/tensor_size*100:.4f}% of tensor)")
-            
-            # Run completion again
-            X = self.complete_tensor(
-                train_indices, train_values, tensor_shape,
-                initial_rank=tuple([1] * len(tensor_shape)), max_rank=max_rank,
-                tol=tol, tol_stagnation=tol_stagnation,
-                max_iter=max_iter, rho=rho, verbose=verbose
-            )
-            
-            # Compute error on new test set
-            err_new = self._relative_error(X, test_indices, test_values)
-            
-            if verbose:
-                print(f"New completion error on test set: {err_new:.6e}")
-            
-            # Check stopping criteria
-            if err_new < tol:
-                if verbose:
-                    print(f"Target accuracy reached. Stopping.")
-                break
+                        print('     ... accepted.')
+                    X = Xnew
+                    control_old = new_control
+                    
+                    if A_Gamma is not None:
+                        test_current = np.linalg.norm(X.gather(Gamma) - A_Gamma) / np.linalg.norm(A_Gamma)
+                        if verbose:
+                            print(f'Current error on test set Gamma: {test_current}')
+                        test.append(test_current)
+                    
+                    # Record time
+                    stats['time'].append(time.time() - start_time)
+                    ranks.append(X.tt_rank)
                 
-            if abs(err_new - err_old) < tol_stagnation * err_old:
-                if verbose:
-                    print(f"Error stagnation detected. Stopping.")
-                break
-                
-            # Check for max rank reached
-            if any(r >= max_rank for r in X.ranks):
-                if verbose:
-                    print(f"Maximum rank reached. Stopping.")
-                break
-        
-        return X
+                # Combine results
+                cost = np.append(cost, cost_tmp)
+                control = np.append(control, control_tmp) if control is not None else control_tmp
     
-    def _riemannian_cg(self, X, train_indices, train_values, test_indices, test_values, 
-                     tol=1e-4, tol_stagnation=1e-4, max_iter=100, verbose=True):
-        """
-        Riemannian conjugate gradient method for tensor completion.
-        
-        Parameters:
-        -----------
-        X : TensorTrain
-            Initial guess for completed tensor in TT format.
-        train_indices : list of tuples
-            Indices of known tensor entries for training.
-        train_values : numpy.ndarray
-            Values of known tensor entries for training.
-        test_indices : list of tuples
-            Indices of known tensor entries for testing.
-        test_values : numpy.ndarray
-            Values of known tensor entries for testing.
-        tol : float, optional
-            Tolerance for relative error on the training set.
-        tol_stagnation : float, optional
-            Tolerance for stagnation detection.
-        max_iter : int, optional
-            Maximum number of iterations.
-        verbose : bool, optional
-            Whether to print progress information.
-            
-        Returns:
-        --------
-        TensorTrain
-            Completed tensor in TT format.
-        """
-        # Initialize variables
-        err_train_prev = float('inf')
-        err_test_prev = float('inf')
-        
-        # Get Riemannian gradient of initial point
-        grad = self._riemannian_gradient(X, train_indices, train_values)
-        
-        # Initial search direction is negative gradient
-        eta = self._scale_tangent_vector(grad, -1.0)
-        
-        # Main CG loop
-        for k in range(max_iter):
-            # Compute step size using line search
-            alpha = self._line_search(X, eta, train_indices, train_values)
-            
-            # Take step and retract to manifold
-            X_next = self._retraction(X, eta, alpha)
-            
-            # Compute errors
-            err_train = self._relative_error(X_next, train_indices, train_values)
-            err_test = self._relative_error(X_next, test_indices, test_values)
-            
-            if verbose and (k % 5 == 0 or k == max_iter-1):
-                print(f"  Iteration {k}: Train error = {err_train:.6e}, Test error = {err_test:.6e}")
-            
-            # Check convergence
-            if err_train < tol:
-                if verbose:
-                    print(f"  Converged to target accuracy.")
-                break
-                
-            # Check for stagnation in both training and test error
-            if (abs(err_train - err_train_prev) < tol_stagnation * err_train_prev and
-                abs(err_test - err_test_prev) < tol_stagnation * err_test_prev):
-                if verbose:
-                    print(f"  Error stagnation detected.")
-                break
-            
-            # Compute new gradient
-            grad_next = self._riemannian_gradient(X_next, train_indices, train_values)
-            
-            # Compute beta using Fletcher-Reeves formula
-            beta = self._compute_fr_beta(grad_next, grad)
-            
-            # Vector transport of previous search direction
-            transported_eta = self._vector_transport(X, X_next, eta)
-            
-            # Update search direction
-            eta = self._combine_directions(grad_next, transported_eta, beta)
-            
-            # Update variables for next iteration
-            X = X_next
-            grad = grad_next
-            err_train_prev = err_train
-            err_test_prev = err_test
-        
-        return X
-    
-    def _riemannian_gradient(self, X, indices, values):
-        """
-        Compute the Riemannian gradient of the cost function at point X.
-        
-        The cost function is f(X) = 0.5 * ||P_Omega(X) - P_Omega(A)||^2
-        where P_Omega is the projection onto the sampling set Omega.
-        
-        Parameters:
-        -----------
-        X : TensorTrain
-            Current point on the manifold.
-        indices : list of tuples
-            Indices of known tensor entries.
-        values : numpy.ndarray
-            Values of known tensor entries.
-            
-        Returns:
-        --------
-        TensorTrain
-            Riemannian gradient in TT format.
-        """
-        # Compute Euclidean gradient first
-        euclidean_grad = self._euclidean_gradient(X, indices, values)
-        
-        # Project onto tangent space at X
-        riemannian_grad = self._project_onto_tangent_space(X, euclidean_grad)
-        
-        return riemannian_grad
-    
-    def _euclidean_gradient(self, X, indices, values):
-        """
-        Compute the Euclidean gradient of the cost function at point X.
-        
-        Parameters:
-        -----------
-        X : TensorTrain
-            Current point on the manifold.
-        indices : list of tuples
-            Indices of known tensor entries.
-        values : numpy.ndarray
-            Values of known tensor entries.
-            
-        Returns:
-        --------
-        numpy.ndarray
-            Euclidean gradient as a sparse tensor.
-        """
-        # Evaluate X at the given indices
-        X_values = np.array([X[idx] for idx in indices])
-        
-        # Compute residuals
-        residuals = X_values - values
-        
-        # Create sparse gradient tensor
-        grad = np.zeros(X.shape)
-        for i, idx in enumerate(indices):
-            grad[idx] = residuals[i]
-        
-        return grad
-    
-    def _project_onto_tangent_space(self, X, Z):
-        """
-        Project a tensor Z onto the tangent space at X.
-        
-        Parameters:
-        -----------
-        X : TensorTrain
-            Point on the manifold.
-        Z : numpy.ndarray
-            Tensor to project.
-            
-        Returns:
-        --------
-        TensorTrain
-            Projected tensor in TT format.
-        """
-        # For simplicity, we'll approximate the projection by converting Z to TT format
-        # and truncating to the same rank as X
-        Z_tt = self.TensorTrain.from_tensor(Z, epsilon=1e-10, max_rank=max(X.ranks))
-        
-        # In a complete implementation, we would compute the exact projection as per
-        # the formulas in the Steinlechner paper, but that's complex to implement here
-        
-        return Z_tt
-    
-    def _line_search(self, X, eta, indices, values):
-        """
-        Perform a line search to find an appropriate step size.
-        
-        Parameters:
-        -----------
-        X : TensorTrain
-            Current point on the manifold.
-        eta : TensorTrain
-            Search direction in TT format.
-        indices : list of tuples
-            Indices of known tensor entries.
-        values : numpy.ndarray
-            Values of known tensor entries.
-            
-        Returns:
-        --------
-        float
-            Step size.
-        """
-        # Evaluate direction at indices
-        eta_values = np.array([eta[idx] for idx in indices])
-        
-        # Evaluate current point at indices
-        X_values = np.array([X[idx] for idx in indices])
-        
-        # Compute residuals
-        residuals = X_values - values
-        
-        # Compute optimal step size for quadratic approximation
-        numerator = np.sum(eta_values * residuals)
-        denominator = np.sum(eta_values**2)
-        
-        if denominator < 1e-10:
-            return 0.0
-        
-        alpha = -numerator / denominator
-        
-        # Ensure alpha is positive and not too large
-        alpha = max(0.0, min(1.0, alpha))
-        
-        return alpha
-    
-    def _retraction(self, X, eta, alpha):
-        """
-        Retract a point X + alpha*eta back to the manifold.
-        
-        Parameters:
-        -----------
-        X : TensorTrain
-            Current point on the manifold.
-        eta : TensorTrain
-            Search direction in TT format.
-        alpha : float
-            Step size.
-            
-        Returns:
-        --------
-        TensorTrain
-            Retracted point on the manifold in TT format.
-        """
-        # Create a full tensor approximation (this is inefficient but simpler to implement)
-        X_full = X.to_full()
-        eta_full = eta.to_full()
-        
-        # Take the step
-        Y_full = X_full + alpha * eta_full
-        
-        # Retract back to manifold using TT-SVD
-        Y = self.TensorTrain.from_tensor(Y_full, epsilon=1e-10, max_rank=max(X.ranks))
-        
-        return Y
-    
-    def _vector_transport(self, X, Y, eta):
-        """
-        Transport a tangent vector eta from X to Y.
-        
-        Parameters:
-        -----------
-        X : TensorTrain
-            Source point on the manifold.
-        Y : TensorTrain
-            Destination point on the manifold.
-        eta : TensorTrain
-            Tangent vector at X in TT format.
-            
-        Returns:
-        --------
-        TensorTrain
-            Transported tangent vector at Y in TT format.
-        """
-        # For simplicity, we'll approximate the vector transport by projecting
-        # eta onto the tangent space at Y
-        return self._project_onto_tangent_space(Y, eta.to_full())
-    
-    def _compute_fr_beta(self, grad_next, grad):
-        """
-        Compute beta using the Fletcher-Reeves formula.
-        
-        Parameters:
-        -----------
-        grad_next : TensorTrain
-            Gradient at next point.
-        grad : TensorTrain
-            Gradient at current point.
-            
-        Returns:
-        --------
-        float
-            Beta coefficient.
-        """
-        # Compute squared norm of gradients
-        norm_next = self._squared_norm(grad_next)
-        norm_curr = self._squared_norm(grad)
-        
-        if norm_curr < 1e-10:
-            return 0.0
-        
-        return norm_next / norm_curr
-    
-    def _squared_norm(self, X):
-        """
-        Compute the squared norm of a TT tensor.
-        
-        Parameters:
-        -----------
-        X : TensorTrain
-            Tensor in TT format.
-            
-        Returns:
-        --------
-        float
-            Squared norm.
-        """
-        # In a TT tensor, the squared norm can be computed efficiently
-        # but for simplicity, we'll use the full tensor
-        X_full = X.to_full()
-        return np.sum(X_full**2)
-    
-    def _combine_directions(self, grad, eta, beta):
-        """
-        Combine gradient and previous direction to get new direction.
-        
-        Parameters:
-        -----------
-        grad : TensorTrain
-            Gradient at current point.
-        eta : TensorTrain
-            Previous search direction.
-        beta : float
-            Combination coefficient.
-            
-        Returns:
-        --------
-        TensorTrain
-            New search direction in TT format.
-        """
-        # For simplicity, we'll compute in full format
-        grad_full = grad.to_full()
-        eta_full = eta.to_full()
-        
-        # Combine directions
-        new_dir_full = -grad_full + beta * eta_full
-        
-        # Convert back to TT format
-        new_dir = self.TensorTrain.from_tensor(new_dir_full, epsilon=1e-10, max_rank=max(grad.ranks))
-        
-        return new_dir
-    
-    def _scale_tangent_vector(self, X, scale):
-        """
-        Scale a tangent vector by a scalar.
-        
-        Parameters:
-        -----------
-        X : TensorTrain
-            Tangent vector in TT format.
-        scale : float
-            Scaling factor.
-            
-        Returns:
-        --------
-        TensorTrain
-            Scaled tangent vector in TT format.
-        """
-        # For simplicity, scale the full tensor
-        X_full = X.to_full()
-        scaled_X_full = scale * X_full
-        
-        # Convert back to TT format
-        scaled_X = self.TensorTrain.from_tensor(scaled_X_full, epsilon=1e-10, max_rank=max(X.ranks))
-        
-        return scaled_X
-    
-    def _relative_error(self, X, indices, values):
-        """
-        Compute the relative error on a set of indices.
-        
-        Parameters:
-        -----------
-        X : TensorTrain
-            Tensor in TT format.
-        indices : list of tuples
-            Indices to evaluate.
-        values : numpy.ndarray
-            True values at the indices.
-            
-        Returns:
-        --------
-        float
-            Relative error.
-        """
-        # Evaluate X at the given indices
-        X_values = np.array([X[idx] for idx in indices])
-        
-        # Compute relative error
-        error = np.linalg.norm(X_values - values)
-        norm_values = np.linalg.norm(values)
-        
-        if norm_values < 1e-10:
-            return error
-        
-        return error / norm_values
-    
-    def _initialize_random_tt(self, tensor_shape, ranks):
-        """
-        Initialize a random TT tensor with given shape and ranks.
-        
-        Parameters:
-        -----------
-        tensor_shape : tuple
-            Shape of the tensor.
-        ranks : tuple
-            TT ranks.
-            
-        Returns:
-        --------
-        TensorTrain
-            Random TT tensor.
-        """
-        d = len(tensor_shape)
-        
-        # Ensure ranks has the correct length
-        if len(ranks) != d - 1:
-            ranks = (1,) + tuple(ranks) + (1,)
-        
-        # Create cores with random values
-        cores = []
-        
-        for i in range(d):
-            if i == 0:
-                core_shape = (1, tensor_shape[i], ranks[i])
-            elif i == d - 1:
-                core_shape = (ranks[i-1], tensor_shape[i], 1)
-            else:
-                core_shape = (ranks[i-1], tensor_shape[i], ranks[i])
-            
-            core = np.random.randn(*core_shape) * 0.1
-            cores.append(core)
-        
-        # Create TT tensor
-        return self.TensorTrain(cores)
-    
-    def _increase_rank(self, X, mu, new_rank):
-        """
-        Increase the rank of a TT tensor at mode mu.
-        
-        Parameters:
-        -----------
-        X : TensorTrain
-            Tensor in TT format.
-        mu : int
-            Mode at which to increase rank.
-        new_rank : int
-            New rank value.
-            
-        Returns:
-        --------
-        TensorTrain
-            TT tensor with increased rank.
-        """
-        # Get cores and current ranks
-        cores = X.cores
-        current_ranks = list(X.ranks)
-        
-        # Check if rank increase is needed
-        if current_ranks[mu] >= new_rank:
-            return X
-        
-        # Increase rank by adding random components
-        rank_diff = new_rank - current_ranks[mu]
-        
-        # Modify cores adjacent to the bond to be increased
-        if mu > 0:  # Not the first core
-            # Update left core
-            old_core = cores[mu-1]  # Shape: (r_{mu-2}, n_{mu-1}, r_{mu-1})
-            r_left, n, r_right = old_core.shape
-            
-            # Create random component to increase rank
-            random_component = np.random.randn(r_left, n, rank_diff) * 1e-2
-            
-            # Concatenate along the rank dimension
-            new_core = np.zeros((r_left, n, new_rank))
-            new_core[:, :, :r_right] = old_core
-            new_core[:, :, r_right:] = random_component
-            
-            cores[mu-1] = new_core
-        
-        if mu < len(cores) - 1:  # Not the last core
-            # Update right core
-            old_core = cores[mu]  # Shape: (r_{mu-1}, n_mu, r_mu)
-            r_left, n, r_right = old_core.shape
-            
-            # Create random component to increase rank
-            random_component = np.random.randn(rank_diff, n, r_right) * 1e-2
-            
-            # Concatenate along the rank dimension
-            new_core = np.zeros((new_rank, n, r_right))
-            new_core[:r_left, :, :] = old_core
-            new_core[r_left:, :, :] = random_component
-            
-            cores[mu] = new_core
-        
-        # Create new TT tensor with updated cores
-        return self.TensorTrain(cores)
-    
-    def _rank1_approximation(self, X):
-        """
-        Create a rank-1 approximation of a TT tensor.
-        
-        Parameters:
-        -----------
-        X : TensorTrain
-            Tensor in TT format.
-            
-        Returns:
-        --------
-        TensorTrain
-            Rank-1 approximation in TT format.
-        """
-        # Get cores and shape
-        cores = X.cores
-        d = len(cores)
-        
-        # Create new rank-1 cores
-        new_cores = []
-        
-        for i in range(d):
-            core = cores[i]
-            r_left, n, r_right = core.shape
-            
-            # For rank-1, we take the first slice of each core
-            if i == 0:
-                new_core = np.zeros((1, n, 1))
-                new_core[0, :, 0] = core[0, :, 0]
-            elif i == d - 1:
-                new_core = np.zeros((1, n, 1))
-                new_core[0, :, 0] = core[0, :, 0]
-            else:
-                new_core = np.zeros((1, n, 1))
-                new_core[0, :, 0] = core[0, :, 0]
-            
-            new_cores.append(new_core)
-        
-        # Create new TT tensor with rank-1 cores
-        return self.TensorTrain(new_cores)
-    
-    def _generate_random_indices(self, tensor_shape, num_samples, exclude=None):
-        """
-        Generate random indices for sampling.
-        
-        Parameters:
-        -----------
-        tensor_shape : tuple
-            Shape of the tensor.
-        num_samples : int
-            Number of samples to generate.
-        exclude : list of tuples, optional
-            Indices to exclude from sampling.
-            
-        Returns:
-        --------
-        numpy.ndarray
-            Array of random indices.
-        """
-        d = len(tensor_shape)
-        
-        # Generate all possible indices
-        total_size = np.prod(tensor_shape)
-        
-        if exclude is not None:
-            # Convert multi-indices to linear indices
-            linear_exclude = self._multiindices_to_linear(exclude, tensor_shape)
-            
-            # Generate random linear indices excluding the excluded ones
-            available_indices = np.setdiff1d(np.arange(total_size), linear_exclude)
-            
-            if len(available_indices) < num_samples:
-                num_samples = len(available_indices)
-                
-            linear_indices = np.random.choice(available_indices, size=num_samples, replace=False)
-        else:
-            # Generate random linear indices
-            linear_indices = np.random.choice(total_size, size=num_samples, replace=False)
-        
-        # Convert linear indices to multi-indices
-        return self._linear_to_multiindices(linear_indices, tensor_shape)
-    
-    def _multiindices_to_linear(self, indices, tensor_shape):
-        """
-        Convert multi-indices to linear indices.
-        
-        Parameters:
-        -----------
-        indices : list of tuples
-            Multi-indices to convert.
-        tensor_shape : tuple
-            Shape of the tensor.
-            
-        Returns:
-        --------
-        numpy.ndarray
-            Array of linear indices.
-        """
-        # Convert each multi-index to a linear index
-        d = len(tensor_shape)
-        linear_indices = np.zeros(len(indices), dtype=int)
-        
-        # Compute strides
-        strides = np.ones(d, dtype=int)
-        for i in range(d-2, -1, -1):
-            strides[i] = strides[i+1] * tensor_shape[i+1]
-        
-        # Convert indices
-        for i, idx in enumerate(indices):
-            linear_idx = 0
-            for j in range(d):
-                linear_idx += idx[j] * strides[j]
-            linear_indices[i] = linear_idx
-        
-        return linear_indices
-    
-    def _linear_to_multiindices(self, linear_indices, tensor_shape):
-        """
-        Convert linear indices to multi-indices.
-        
-        Parameters:
-        -----------
-        linear_indices : numpy.ndarray
-            Linear indices to convert.
-        tensor_shape : tuple
-            Shape of the tensor.
-            
-        Returns:
-        --------
-        numpy.ndarray
-            Array of multi-indices.
-        """
-        # Convert each linear index to a multi-index
-        d = len(tensor_shape)
-        multi_indices = np.zeros((len(linear_indices), d), dtype=int)
-        
-        # Compute strides
-        strides = np.ones(d, dtype=int)
-        for i in range(d-2, -1, -1):
-            strides[i] = strides[i+1] * tensor_shape[i+1]
-        
-        # Convert indices
-        for i, idx in enumerate(linear_indices):
-            remaining = idx
-            for j in range(d):
-                multi_indices[i, j] = remaining // strides[j]
-                remaining %= strides[j]
-        
-        return multi_indices
+    return X, cost, test, stats, ranks
 
 
-def test_tt_completion():
+def create_random_completion_problem(dims, rank, sampling_factor=5, test_factor=0.1):
     """
-    Simple test function for TTCompletion.
+    Create a random tensor completion problem.
+    
+    Parameters
+    ----------
+    dims : tuple
+        Dimensions of the tensor
+    rank : int
+        Rank of the tensor train to generate
+    sampling_factor : float
+        Factor determining how many samples to take (sampling_factor * rank * sum(dims))
+    test_factor : float
+        Fraction of samples to use for testing
+    
+    Returns
+    -------
+    X_full : TensorTrain
+        Full tensor train
+    A_Omega : ndarray
+        Known values
+    Omega : ndarray
+        Indices of known values
+    A_Gamma : ndarray
+        Test values
+    Gamma : ndarray
+        Indices of test values
     """
-    from test import TensorTrain
+    from tt_core import TensorTrain
     
-    # Create a random tensor
-    tensor_shape = (5, 5, 5)
-    X = np.random.rand(*tensor_shape)
+    # Create a random TT tensor
+    X_full = TensorTrain.random(dims, rank)
     
-    # Sample some entries
-    indices = np.array([(i, j, k) for i in range(5) for j in range(5) for k in range(5)])
-    np.random.shuffle(indices)
-    sample_indices = indices[:50]  # Use 50 samples
-    sample_values = np.array([X[tuple(idx)] for idx in sample_indices])
+    # Generate total number of samples
+    n_samples = int(sampling_factor * rank * sum(dims))
     
-    # Create TTCompletion instance
-    tt_completion = TTCompletion(TensorTrain)
+    # Generate random indices
+    total_elements = np.prod(dims)
+    linear_indices = np.random.choice(total_elements, n_samples, replace=False)
     
-    # Complete tensor
-    X_completed = tt_completion.complete_tensor(
-        sample_indices, sample_values, tensor_shape,
-        initial_rank=(1, 1), max_rank=3, 
-        tol=1e-4, max_iter=50, verbose=True
+    # Convert linear indices to multi-indices
+    multi_indices = np.zeros((n_samples, len(dims)), dtype=int)
+    for i, idx in enumerate(linear_indices):
+        for j in range(len(dims)-1, -1, -1):
+            multi_indices[i, j] = idx % dims[j]
+            idx //= dims[j]
+    
+    # Split into training and test sets
+    n_test = int(test_factor * n_samples)
+    n_train = n_samples - n_test
+    
+    # Training set
+    Omega = multi_indices[:n_train]
+    A_Omega = X_full.gather(Omega)
+    
+    # Test set
+    Gamma = multi_indices[n_train:]
+    A_Gamma = X_full.gather(Gamma)
+    
+    return X_full, A_Omega, Omega, A_Gamma, Gamma
+
+
+def example_usage():
+    """Example of how to use the tensor completion functions."""
+    # Create a random tensor completion problem
+    dims = (10, 10, 10, 10)  # 4D tensor with dimension 10 in each mode
+    rank = 3                  # TT-rank
+    X_full, A_Omega, Omega, A_Gamma, Gamma = create_random_completion_problem(dims, rank)
+    print(A_Omega)
+    print(Omega)
+    # Create a random initial guess with lower rank
+    from tt_core import TensorTrain
+    X0 = TensorTrain.random(dims, 1)
+    
+    # Set options for completion
+    opts = {
+        'maxrank': 5,     # Maximum rank to try
+        'maxiter': 20,    # Maximum iterations per optimization
+        'tol': 1e-6,      # Tolerance for convergence
+        'verbose': True   # Print progress
+    }
+    
+    # Run completion with adaptive rank
+    X, cost, test, stats, ranks = completion_with_rank_adaptation(
+        'GeomCG', A_Omega, Omega, A_Omega, Omega, A_Gamma, Gamma, X0, opts
     )
     
-    # Compute full tensor
-    X_completed_full = X_completed.to_full()
+    # Calculate relative error
+    rel_error = np.linalg.norm(X.gather(Gamma) - A_Gamma) / np.linalg.norm(A_Gamma)
+    print(f"Final relative error on test set: {rel_error}")
     
-    # Compute relative error
-    relative_error = np.linalg.norm(X - X_completed_full) / np.linalg.norm(X)
-    print(f"Relative error of completed tensor: {relative_error:.6e}")
-    
-    # Test adaptive sampling strategy
-    def reference_method(idx):
-        return X[tuple(idx)]
-    
-    X_adaptive = tt_completion.adaptive_sampling_strategy1(
-        reference_method, tensor_shape,
-        max_sample_percentage=0.3, initial_sample_size=20, test_size=20,
-        max_rank=3, tol=1e-4, max_iter=50, verbose=True
-    )
-    
-    # Compute full tensor
-    X_adaptive_full = X_adaptive.to_full()
-    
-    # Compute relative error
-    relative_error_adaptive = np.linalg.norm(X - X_adaptive_full) / np.linalg.norm(X)
-    print(f"Relative error with adaptive sampling: {relative_error_adaptive:.6e}")
+    return X, cost, test, stats, ranks
 
-
-# Test the implementation if this file is run directly
-if __name__ == "__main__":
-    test_tt_completion()
+example_usage()
