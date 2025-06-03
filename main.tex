@@ -1,0 +1,967 @@
+\documentclass[12pt]{article}
+\usepackage{graphicx}
+\usepackage[english]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage{afterpage}
+\usepackage{titlesec}
+\setcounter{secnumdepth}{4}
+\titleformat{\paragraph}
+{\normalfont\normalsize\bfseries}{\theparagraph}{1em}{}
+\titlespacing*{\paragraph}
+{0pt}{3.25ex plus 1ex minus .2ex}{1.5ex plus .2ex}
+
+\usepackage{lastpage}
+\usepackage{amsmath}
+\usepackage{fancyhdr}
+\usepackage[a4paper, margin=3.5cm]{geometry}
+\usepackage{setspace}
+\usepackage{gensymb}
+\usepackage[export]{adjustbox}
+\usepackage[demo]{graphicx}
+\usepackage{caption}
+\usepackage{hyperref}
+\usepackage{verbatim}
+\usepackage{subcaption}
+\usepackage{tikz}
+\usepackage{blindtext}
+\geometry{hscale=0.7,vscale=0.75,centering}
+\usepackage[skip=10pt plus1pt, indent=40pt]{parskip}
+\renewcommand{\familydefault}{\sfdefault} 
+\fontsize{12pt}{14pt}\selectfont 
+\newcommand{\hsp}{\hspace{20pt}}
+\newcommand{\HRule}{\rule{\linewidth}{0.5mm}}
+
+\pagestyle{plain}
+
+\begin{document}
+
+\begin{titlepage}
+  \begin{sffamily}
+  \haut{}
+  		{\includegraphics[scale=0.25]{logo_ensimag (1).png}} 
+  		 \hspace{5cm}
+  		   
+  
+  \begin{center}
+    \vspace{1.5cm}
+    \textsc{Grenoble INP - ENSIMAG} \\
+    \textsc{Assistant Engineer Internship}\\[1cm]
+    
+    \HRule \\[0.4cm]
+    { \huge \bfseries Internship Report \\ \texttt{}\\[0.4cm] }
+    
+    \HRule \\[1.5cm]
+    
+    \large{\textbf{Internship Subject:} Modeling and Implementation of a Pricing and Risk Management Library for Commodity Hedging Products}\\[1cm]
+    
+    \begin{minipage}{0.48\textwidth}
+      \begin{flushleft} \large
+        \emph{Prepared by:}
+        \\ \vspace{0.3cm} Ismail \textbf{BADAOUI}
+        \\ \vspace{0.8cm}
+        \emph{Internship Period:}
+        \\ \vspace{0.3cm} From June 10, 2024 to August 11, 2024
+        \\ \vspace{0.3cm} Duration: 9 weeks
+      \end{flushleft}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.48\textwidth}
+      \begin{flushright} \large
+        \emph{Company Supervisors:} \\ \vspace{0.3cm} 
+        Mr. Adnane \textbf{MOULIM} \\
+        Mr. Hicham \textbf{SABRI} \\ \vspace{0.8cm}
+        \emph{Academic Supervisor and Jury Member:} \\ \vspace{0.3cm} 
+        Ms. Gaëlle \textbf{CALVARY}
+      \end{flushright}
+    \end{minipage}
+  
+    \vfill
+    
+    \large{\textbf{Host Organization:}}\\
+    \vspace{0.3cm}
+    QuantFactory Subsidiary company Quanteam France\\
+    74 RUE JAAFAR ESSADIQ, Agdal Riyad, Rabat - Morocco
+    
+    \vspace*{\fill}
+  \end{center}
+  \end{sffamily}
+\end{titlepage}
+
+\newpage
+\tableofcontents
+
+\newpage
+\section{Introduction}
+In an era of volatile commodity markets, industries heavily reliant on raw materials such as oil, gas, and metals face significant financial risks. These fluctuations in commodity prices can have a substantial impact on a company's profitability and overall financial stability. To mitigate these risks, businesses increasingly turn to sophisticated hedging strategies. However, the effective implementation of these strategies requires robust tools for pricing derivative instruments and managing associated risks.\\\par
+The primary challenge lies in developing a comprehensive library that can accurately price various hedging products and effectively manage the inherent risks in commodity markets. This library must be capable of handling the complexities of different commodities, including oil, gas, and metals, each with its unique market dynamics and risk profiles. Furthermore, it needs to incorporate advanced financial models, real-time market data, and flexible risk management tools to provide reliable and actionable insights.\\\par
+The objective of this internship is to model and implement a pricing and risk management library specifically tailored for commodity hedging products. This involves designing and developing algorithms for option pricing, implementing various hedging strategies, and creating tools for risk assessment and management. The library aims to provide a comprehensive solution that enables businesses to make informed decisions in their commodity hedging practices, ultimately enhancing their financial stability in the face of market volatility.
+
+\section{Context}
+\subsection{Host Organization}
+Quanteam is a leading consultancy firm specializing in financial services, offering expertise in risk management, quantitative analysis, IT, and finance. Established to bridge the gap between complex financial models and practical business needs, Quanteam has become a trusted partner for major banks, asset managers, and insurance companies worldwide. With a strong presence in financial hubs like Paris, London, and New York, the company combines deep industry knowledge with cutting-edge technology to deliver tailored solutions addressing the evolving challenges of financial markets.\\\par
+The firm's diverse portfolio of services ranges from developing risk management frameworks to implementing advanced pricing models. Quanteam's ability to navigate the intricacies of the financial world and provide robust, innovative solutions has solidified its reputation as a leader in financial consultancy. Operating across multiple sectors, including capital markets, asset management, and insurance, Quanteam ensures a comprehensive understanding of the financial landscape.
+\subsection{Department and Mission}
+Within Quanteam, the QuantFactory division plays a crucial role in cultivating the next generation of quantitative analysts, or "quants." As a dedicated subsidiary, QuantFactory provides specialized training and development programs designed to equip new quants with the necessary skills and knowledge before they commence their roles in the financial industry. This training encompasses mathematical finance, programming, risk management, and the practical application of quantitative models in real-world scenarios.\\\par
+QuantFactory's mission extends beyond technical preparation, aiming to instill a deep understanding of financial markets and the strategic importance of quantitative work. By fostering a strong foundation in both theory and practice, QuantFactory ensures its trainees are well-prepared to contribute effectively to the complex and fast-paced world of finance
+\subsection{Relevance of the Project}
+The development of a pricing and risk management library for commodity hedging products aligns perfectly with Quanteam's core competencies and QuantFactory's educational mission. This project addresses a critical need in the financial industry, particularly for clients dealing with commodities like oil, gas, and metals. The tool we are developing serves multiple crucial functions:
+\begin{enumerate}
+\item Counter-valuation for commodities: The library will provide comprehensive data and derivative pricing capabilities, essential for accurate valuation of commodity-based financial instruments.
+\item Hedging support: All the data and pricing information generated by the tool will serve as a foundation for developing effective hedging strategies.
+\item Market finance liberalization: The project aims to contribute to the liberalization of market finance for industrial players in the MENA (Middle East and North Africa) region, potentially opening up new opportunities and improving financial risk management in these markets.
+\item Simulation and backtesting: A key feature of the library is its ability to simulate various scenarios. This allows industrial clients to:
+\begin{itemize}
+\item Analyze different instruments
+\item Simulate based on the products they buy or sell
+\item Model annual or monthly consumption patterns
+\item Combine multiple products in their hedging strategies
+\item Determine the threshold at which they achieve adequate coverage
+\item Evaluate potential cost savings
+\item Assess the risk-reward ratio of different strategies
+\end{itemize}
+\end{enumerate}
+By working on this library, I am contributing to Quanteam's ability to offer cutting-edge solutions to its clients while simultaneously enhancing my skills in quantitative finance and programming – key objectives of the QuantFactory program. This project provides a unique opportunity to apply theoretical knowledge to real-world financial challenges, bridging the gap between academic learning and practical implementation. It also allows for the exploration of advanced financial modeling techniques and risk management strategies, which are central to Quanteam's services and QuantFactory's training philosophy.\\\par
+The comprehensive nature of this tool, combining pricing, risk management, simulation, and backtesting capabilities, makes it a valuable asset for Quanteam's clients and an excellent learning platform for developing the skills essential in modern quantitative finance.
+
+\section{Problem Analysis and Proposed Solution}
+
+\subsection{Detailed Problem Description}
+
+The commodity markets, particularly those dealing with oil, gas, and metals, present a unique set of challenges for financial modeling and risk management. These markets are characterized by high volatility, complex price dynamics, and a multitude of risk factors that make accurate pricing and effective hedging strategies crucial for market participants.\\\par
+Volatility in commodity markets stems from various sources, including geopolitical events, supply chain disruptions, technological advancements, and changing global demand patterns. For instance, oil prices can fluctuate dramatically due to OPEC decisions, geopolitical tensions, or shifts in renewable energy adoption. Similarly, metal prices are influenced by factors such as industrial demand, mining output, and recycling rates. This inherent volatility creates a pressing need for sophisticated financial instruments to manage risk.\\\\
+The pricing of derivative instruments in commodity markets presents several challenges:
+\begin{enumerate}
+
+\item Mean Reversion: Unlike stocks, commodity prices often exhibit mean-reverting behavior, where prices tend to return to a long-term average. This characteristic requires modifications to traditional pricing models.
+\item Seasonality: Many commodities, especially in the energy sector, display seasonal price patterns that must be accounted for in pricing models.
+\item Storage Costs: The cost of storing physical commodities (particularly relevant for metals and oil) impacts futures prices and the relationship between spot and futures markets.
+\item Convenience Yield: This concept, unique to commodities, represents the benefit of holding the physical asset rather than a futures contract, and it significantly affects pricing dynamics.
+\item Delivery Options: Many commodity futures contracts allow for delivery of different grades or at different locations, adding complexity to the valuation process.
+\end{enumerate}
+Risk management in commodity hedging faces its own set of challenges:
+\begin{enumerate}
+
+\item Basis Risk: The risk that the price of the hedged asset doesn't move in perfect correlation with the price of the hedge instrument.
+\item Volumetric Risk: Uncertainty in the quantity of the commodity that needs to be hedged, particularly relevant for industrial consumers.
+\item Regulatory Risk: Changing regulations in commodity markets can impact hedging strategies and instrument availability.
+\item Liquidity Risk: Some commodity derivatives markets may lack the depth and liquidity of more traditional financial markets.
+\item Model Risk: The complexity of commodity markets increases the risk of model misspecification or parameter estimation errors.
+\end{enumerate}
+Given these challenges, there is a clear need for a comprehensive tool that can accurately price a wide range of commodity derivatives, implement effective hedging strategies, and provide robust risk management capabilities. This tool must be flexible enough to adapt to different commodities and market conditions, while also being user-friendly for industrial clients who may not have deep expertise in quantitative finance.
+\\\par
+The complexity of this problem is further compounded by the need to cater to the specific requirements of the MENA region, where market structures and regulatory environments may differ from more established financial centers. As such, the solution must not only address the technical challenges of commodity markets but also contribute to the broader goal of market finance liberalization in this region.
+
+\subsection{Specific Objectives}
+The primary aim of this project was to develop a comprehensive library for pricing and risk management of commodity hedging products. The specific objectives of the internship were as follows:
+\begin{itemize}
+\item \textbf{Implement Robust Pricing Models:}
+Develop and implement the Black-Scholes model, Monte Carlo simulation framework, and Black-76 model for commodity derivatives pricing.
+\item \textbf{Develop Greeks Calculations:} 
+Implement functions to calculate key option Greeks (Delta, Gamma, Vega, Rho) across different option types and underlying commodities.
+
+\item \textbf{Create Volatility and Risk-Free Rate Estimation Tools:} 
+Develop functions for estimating implied volatility using the Newton-Raphson method and deriving risk-free rates from market prices.
+
+\item \textbf{Implement Hedging Strategies:} 
+Develop modules for various hedging strategies, from basic put options to complex collars and swaps, within a flexible framework.
+
+\item \textbf{Design Simulation and Backtesting Capabilities:} 
+Create tools for market scenario simulation, hedging strategy performance testing, and backtesting using historical data.
+
+\item \textbf{Integrate Real-Time Market Data:} 
+Develop interfaces to fetch and process real-time market data from sources like Yahoo Finance and TradingView, and implement forward curve analysis.
+
+\item \textbf{Create Data Visualization Tools:} 
+Develop functions to visualize key data, including forward curves, historical price trends, and simulation results.
+
+\item \textbf{Ensure Cross-Asset Compatibility:} 
+Design the library to work with different commodities (oil, gas, metals) and handle cross-currency calculations.
+
+\item \textbf{Develop User Interface Components:} 
+Create React components for a user-friendly front-end interface with interactive elements for parameter input and result display.
+
+\item \textbf{Optimize Performance and Scalability:} 
+Ensure efficient implementation of algorithms and design an easily expandable library architecture.
+\end{itemize}
+These objectives aimed to create a comprehensive, flexible, and powerful tool addressing the complex needs of commodity hedging in the modern financial landscape, with a particular focus on the MENA region's requirements.
+
+\subsection{State of the Art of Existing Solutions}
+In the realm of commodity derivatives pricing and risk management, several models and tools have been developed over the years. This section provides an overview of the current state of the art, focusing on pricing models, risk management frameworks, and hedging strategy tools.
+\subsubsection{Pricing Models}
+\begin{itemize}
+\item \textbf{Black-Scholes-Merton (BSM) Model:} While originally developed for equity options, the BSM model has been adapted for commodity derivatives. It assumes geometric Brownian motion for the underlying asset and provides closed-form solutions for European options. However, it doesn't account for mean reversion or seasonality in commodity prices.
+\item \textbf{Black-76 Model:} An extension of the BSM model, specifically designed for commodity futures options. It uses the futures price instead of the spot price, making it more suitable for many commodity markets.
+
+\item \textbf{Stochastic Volatility Models:} Models like Heston's model incorporate time-varying volatility, providing a more realistic representation of market dynamics. However, they often lack closed-form solutions and are computationally intensive.
+
+\item \textbf{Jump-Diffusion Models:} These models, such as Merton's jump-diffusion model, account for sudden price jumps in commodity markets. They can better capture extreme events but are more complex to implement and calibrate.
+
+\item \textbf{Mean-Reverting Models:} Models like the Ornstein-Uhlenbeck process incorporate mean reversion, a common feature in commodity prices. These models can provide more accurate long-term price forecasts but may struggle with short-term dynamics.
+\end{itemize}
+\subsubsection{Risk Management Frameworks}
+\begin{itemize}
+\item \textbf{Value at Risk (VaR):} Widely used in the industry, VaR provides a single number estimating potential losses. However, it has been criticized for underestimating tail risks, particularly in volatile commodity markets.
+\item \textbf{Conditional Value at Risk (CVaR):} Also known as Expected Shortfall, CVaR addresses some limitations of VaR by considering the average loss beyond the VaR threshold. It provides a more conservative risk measure but can be more challenging to estimate accurately.
+
+\item \textbf{Scenario Analysis:} This approach involves simulating various market scenarios to assess potential outcomes. While flexible, it heavily relies on the quality and comprehensiveness of the scenarios considered.
+
+\item \textbf{Stress Testing:} Similar to scenario analysis but focusing on extreme events. It's valuable for assessing worst-case scenarios but may overlook more probable, moderate risks.
+\end{itemize}
+\subsubsection{Hedging Strategy Tools}
+\begin{itemize}
+\item \textbf{Delta Hedging:} A common strategy that involves dynamically adjusting the hedge ratio based on the option's delta. While effective for small price movements, it can be costly due to frequent rebalancing and may fail during large price jumps.
+\item \textbf{Options-Based Strategies:} Tools for implementing strategies like collars, straddles, and spreads are available. These offer flexibility but can be complex to manage and may have high associated costs.
+
+\item \textbf{Monte Carlo Simulation:} Used for complex derivatives and strategies where closed-form solutions don't exist. While powerful, these methods can be computationally intensive and sensitive to model assumptions.
+
+\item \textbf{Machine Learning Approaches:} Emerging tools using artificial intelligence for price prediction and optimal hedging. These show promise but often lack the interpretability of traditional models and require substantial historical data.
+\end{itemize}
+\subsubsection{Limitations of Current Solutions}
+While these existing solutions provide a solid foundation, they have several limitations when applied to commodity markets:
+\begin{itemize}
+\item Many models don't adequately account for unique features of commodity markets such as seasonality, storage costs, and convenience yields.
+\item Existing tools often lack the flexibility to easily adapt to different types of commodities and market conditions.
+\item There's a trade-off between model complexity and computational efficiency, with many advanced models being too slow for real-time applications.
+\item Most current solutions don't provide an integrated platform for pricing, risk management, and hedging strategy implementation.
+\item The specific needs of the MENA region, including local market structures and regulations, are often not addressed by generic solutions.
+\end{itemize}
+These limitations underscore the need for a more comprehensive, flexible, and efficient solution tailored to the complexities of commodity markets, particularly for applications in the MENA region.
+
+\subsection{Constraints Set by the Host Organization}
+In developing the pricing and risk management library for commodity hedging products, Quanteam imposed several constraints to ensure the final product would meet their standards and client needs. These constraints shaped the development process and the final solution:
+\subsubsection{Performance Requirements}
+\begin{itemize}
+\item \textbf{Speed:} The library must be capable of performing real-time pricing and risk calculations. This necessitated efficient algorithm implementation and optimization of computational resources.
+\item \textbf{Accuracy:} Given the financial implications of trading decisions, the library must provide highly accurate results. A balance between computational speed and precision was required.
+
+\item \textbf{Scalability:} The solution needed to handle large volumes of data and multiple concurrent users without significant degradation in performance.
+\end{itemize}
+\subsubsection{Compatibility and Integration}
+\begin{itemize}
+\item \textbf{Cross-platform Functionality:} The solution needed to work across different operating systems and platforms to accommodate diverse client environments.
+
+\item \textbf{API Design:} A well-documented and intuitive API was required to facilitate easy integration with other systems and potential future extensions.
+\end{itemize}
+\subsubsection{Flexibility and Adaptability}
+\begin{itemize}
+\item \textbf{Multiple Commodities:} The library needed to be flexible enough to handle various types of commodities, including oil, gas, and metals, each with its unique market characteristics.
+\item \textbf{Customizable Models:} The ability to easily add new pricing models or modify existing ones was crucial to address evolving market conditions and client needs.
+
+\item \textbf{Configurable Risk Metrics:} The risk management component needed to allow for customizable risk metrics and reporting to cater to different client risk management approaches.
+\end{itemize}
+\subsubsection{User Interface and Experience}
+\begin{itemize}
+\item \textbf{Intuitive Design:} The front-end interface had to be user-friendly, catering to users with varying levels of technical expertise in finance and programming.
+\item \textbf{Visualization Capabilities:} Strong data visualization features were required to present complex financial data in an easily understandable format.
+
+\item \textbf{Responsive Design:} The UI needed to be responsive and accessible across different devices, including desktops, tablets, and smartphones.
+\end{itemize}
+\subsubsection{Documentation and Support}
+\begin{itemize}
+\item \textbf{Comprehensive Documentation:} Detailed documentation of the library's architecture, functions, and usage was required to facilitate future maintenance and updates.
+\item \textbf{Training Materials:} The development of training materials and user guides was necessary to support the onboarding of new users and clients.
+\end{itemize}
+\subsubsection{Resource Constraints}
+\begin{itemize}
+\item \textbf{Budget Limitations:} The development had to be carried out using available resources, necessitating cost-effective solutions and open-source tools where possible.
+\end{itemize}
+These constraints provided a framework for the development process, ensuring that the final product would not only meet the technical requirements but also align with Quanteam's business objectives and client expectations in the commodity trading and risk management sector.
+I
+now let's go to section 3.5
+
+
+Certainly. Let's draft section 3.5, which focuses on the proposed solution. This section should outline the architecture and key components of the pricing and risk management library you developed during your internship.
+
+\subsection{Proposed Solution}
+
+Based on the problem analysis, specific objectives, and constraints set by Quanteam, the following solution was proposed and implemented:
+
+\subsubsection{Architecture of the Pricing and Risk Management Library}
+
+The library was designed with a modular, layered architecture to ensure flexibility, scalability, and ease of maintenance:
+
+\begin{itemize}
+\item \textbf{Core Calculation Layer:} This layer contains the fundamental pricing models and risk calculation algorithms implemented in Java for optimal performance.
+
+
+
+\item \textbf{Strategy Layer:} Built on top of the core layer, this component handles the implementation of various hedging strategies and portfolio management tools.
+
+\item \textbf{Data Management Layer:} Responsible for handling data input/output, including real-time market data integration and historical data management.
+
+\item \textbf{API Layer:} Provides a well-defined interface for external systems and the user interface to interact with the library's functionalities.
+
+\item \textbf{User Interface Layer:} Implemented using React, this layer provides an intuitive, web-based interface for users to interact with the library.
+\end{itemize}
+
+\subsubsection{Integration of Multiple Pricing Models}
+
+The library incorporates several pricing models to cater to different types of commodity derivatives:
+
+\begin{itemize}
+\item \textbf{Black-Scholes Model:} Implemented for basic option pricing, with adaptations for commodity-specific features.
+
+\item \textbf{Black-76 Model:} Specifically implemented for pricing commodity futures options.
+
+\item \textbf{Monte Carlo Simulation:} Developed for pricing complex, path-dependent options and for scenario analysis.
+
+\end{itemize}
+
+\subsubsection{Flexible Hedging Strategy Modules}
+
+A set of customizable hedging strategy modules was developed:
+
+\begin{itemize}
+\item \textbf{Single Instrument Strategies:} Including long/short positions in futures, forwards, and options.
+
+\item \textbf{Complex Strategies:} Implementations of collars, spreads, and custom option combinations.
+
+\end{itemize}
+
+\subsubsection{Advanced Simulation and Backtesting Tools}
+
+Robust simulation and backtesting capabilities were implemented:
+
+\begin{itemize}
+\item \textbf{Monte Carlo Scenario Generator:} For simulating various market scenarios and stress testing.
+
+
+
+\item \textbf{Historical Backtesting Engine:} To evaluate strategy performance using historical data.
+
+\end{itemize}
+
+\subsubsection{Real-Time Market Data Integration}
+
+Interfaces were developed to fetch and process real-time market data:
+
+\begin{itemize}
+\item \textbf{Data Connectors:} APIs to connect with data providers like Yahoo Finance and TradingView.
+
+\item \textbf{Data Normalizer:} A component to standardize data from different sources into a consistent format.
+
+\end{itemize}
+
+\subsubsection{Risk Assessment and Visualization Components}
+
+Comprehensive risk assessment tools were implemented:
+
+\begin{itemize}
+\item \textbf{Greeks Calculator:} For computing and visualizing option Greeks (Delta, Gamma, Vega, Theta, Rho).
+
+\item \textbf{Sensitivity Analysis Tools:} For assessing the impact of various market factors on portfolio value.
+
+\item \textbf{Interactive Dashboards:} React-based components for visualizing risk metrics, price trends, and strategy performance.
+\end{itemize}
+
+\subsubsection{Extensibility and Customization}
+
+The library was designed with extensibility in mind:
+
+\begin{itemize}
+\item \textbf{Plugin Architecture:} Allowing easy addition of new pricing models, data sources, or strategy modules.
+
+\item \textbf{Open API:} Enabling integration with external systems and potential for building additional tools on top of the library.
+\end{itemize}
+
+This comprehensive solution addresses the complex needs of commodity hedging in the modern financial landscape, with a particular focus on the requirements of the MENA region. It provides a powerful, flexible, and user-friendly tool for pricing, risk management, and strategy implementation in commodity markets.
+
+\section{Methodology and Implementation}
+
+\subsection{High-level Architecture}
+
+The pricing and risk management library for commodity hedging products is designed with a modular, layered architecture to ensure flexibility, scalability, and ease of maintenance. The high-level architecture consists of the following key components:
+
+\begin{itemize}
+    \item Core Calculation Layer
+    \item Strategy Layer
+    \item Data Management Layer
+    \item API Layer
+    \item User Interface Layer
+\end{itemize}
+
+\subsubsection{Core Calculation Layer}
+
+The core calculation layer forms the foundation of our library, implementing fundamental pricing models and risk calculation algorithms. This layer is responsible for the computationally intensive tasks and is optimized for performance.
+
+Key components of this layer include:
+
+\begin{itemize}
+    \item Black-Scholes Model
+    \item Monte Carlo Simulation Engine
+    \item Greeks Calculator
+    \item Implied Volatility Solver
+\end{itemize}
+
+\subsubsection{Strategy Layer}
+
+Built on top of the core layer, the strategy layer handles the implementation of various hedging strategies and portfolio management tools. It leverages the pricing and risk calculations from the core layer to evaluate and optimize hedging strategies.
+
+Key components include:
+
+\begin{itemize}
+    \item Put Option Strategy
+    \item Call Option Strategy
+    \item Collar Strategy
+    \item Swap Strategy
+\end{itemize}
+
+\subsubsection{Data Management Layer}
+
+This layer is responsible for handling data input/output, including real-time market data integration and historical data management. It interfaces with external data sources and provides normalized data to other layers of the library.
+
+Key components include:
+
+\begin{itemize}
+    \item Data Fetcher (e.g., for Yahoo Finance, TradingView)
+    \item Data Normalizer
+    \item Historical Data Storage
+\end{itemize}
+
+\subsubsection{API Layer}
+
+The API layer provides a well-defined interface for external systems and the user interface to interact with the library's functionalities. It exposes key functions of the underlying layers through a consistent and documented API.
+
+\subsubsection{User Interface Layer}
+
+Implemented using React, this layer provides an intuitive, web-based interface for users to interact with the library. It includes components for data visualization, strategy configuration, and results presentation.
+
+\subsection{Technical Details of Implementation}
+
+\subsubsection{Pricing Models}
+
+\paragraph{Black-Scholes Model}
+
+The Black-Scholes model forms the cornerstone of our option pricing implementation. This model assumes that the underlying asset price follows a geometric Brownian motion, described by the following stochastic differential equation (SDE):
+
+\begin{equation}
+    dS_t = \mu S_t dt + \sigma S_t dW_t
+\end{equation}
+
+Where $S_t$ is the asset price at time $t$, $\mu$ is the drift (expected return), $\sigma$ is the volatility, and $W_t$ is a Wiener process (standard Brownian motion).
+
+To price options, we employ the risk-neutral pricing framework, which involves changing to an equivalent martingale measure, often called the risk-neutral measure. Under this measure, the drift $\mu$ is replaced by the risk-free rate $r$. The SDE under the risk-neutral measure becomes:
+
+\begin{equation}
+    dS_t = r S_t dt + \sigma S_t d\tilde{W}_t
+\end{equation}
+
+Where $\tilde{W}_t$ is a Wiener process under the risk-neutral measure.
+
+This transition from the real-world measure to the risk-neutral measure is fundamental in option pricing theory and is motivated by several key principles:
+
+\begin{enumerate}
+    \item \textbf{No-arbitrage principle}: In a complete market without arbitrage opportunities, there exists a unique risk-neutral measure under which all discounted asset prices are martingales \cite{Harrison1979}.
+    
+    \item \textbf{Independence from risk preferences}: By changing to the risk-neutral measure, we can price options without needing to know the market's risk preferences or the expected return of the underlying asset.
+    
+    \item \textbf{Simplification of pricing}: Under the risk-neutral measure, we can price options by simply taking the expected value of the discounted payoff, using the risk-free rate as the discount factor.
+\end{enumerate}
+
+As demonstrated by Cox and Ross (1976) \cite{Cox1976}, this approach leads to the same option prices as would be obtained in an equilibrium model where investors are risk-neutral. The key insight is that the price of the option does not depend on the actual drift $\mu$ of the underlying asset, which would require estimation of the market price of risk.
+
+Using this risk-neutral pricing framework, we derive the Black-Scholes formula for a European call option:
+
+\begin{equation}
+    C = S_0 N(d_1) - Ke^{-rT} N(d_2)
+\end{equation}
+
+Where:
+\begin{align*}
+    d_1 &= \frac{\ln(S_0/K) + (r + \sigma^2/2)T}{\sigma\sqrt{T}} \\
+    d_2 &= d_1 - \sigma\sqrt{T}
+\end{align*}
+
+And $N(x)$ is the cumulative distribution function of the standard normal distribution, $S_0$ is the initial asset price, $K$ is the strike price, $r$ is the risk-free rate, $T$ is the time to maturity, and $\sigma$ is the volatility.
+
+This formula arises from solving the Black-Scholes partial differential equation, which can be derived using Itô's lemma and the principle of no arbitrage. The use of the risk-neutral measure simplifies the derivation and allows for a closed-form solution.
+
+It's important to note that while we price options under the risk-neutral measure, the actual dynamics of the asset in the real world still follow the original SDE with drift $\mu$. The risk-neutral measure is a mathematical tool for pricing, not a description of real-world asset behavior.
+
+In our implementation, we use this formula as the basis for pricing European options on commodities, with appropriate adjustments for commodity-specific factors such as storage costs and convenience yields.
+
+\paragraph{Monte Carlo Simulation}
+
+For more complex derivatives and scenario analysis, we implement a Monte Carlo simulation method. This approach is particularly useful for pricing path-dependent options and for situations where closed-form solutions are not available.
+
+The Monte Carlo method relies on the risk-neutral pricing framework, simulating many possible price paths of the underlying asset under the risk-neutral measure. The core of our Monte Carlo implementation is based on the risk-neutral SDE:
+
+\begin{equation}
+    dS_t = r S_t dt + \sigma S_t d\tilde{W}_t
+\end{equation}
+
+Instead of using the Euler-Maruyama discretization, we employ the exact solution of this SDE, which is given by:
+
+\begin{equation}
+    S_{t+\Delta t} = S_t \exp\left((r - \frac{1}{2}\sigma^2)\Delta t + \sigma \sqrt{\Delta t} Z\right)
+\end{equation}
+
+Where $Z \sim N(0,1)$ is a standard normal random variable. This formulation, known as the log-normal model, ensures that the asset price remains positive and follows a log-normal distribution, which is consistent with the assumptions of the Black-Scholes model.
+
+The algorithm for our Monte Carlo simulation can be summarized as follows:
+
+\begin{enumerate}
+    \item Initialize parameters: $S_0$ (initial price), $r$ (risk-free rate), $\sigma$ (volatility), $T$ (time to maturity), $N$ (number of time steps), $M$ (number of simulations)
+    \item Set $\Delta t = T/N$
+    \item For each simulation $m = 1$ to $M$:
+        \begin{enumerate}
+            \item Initialize $S_0^m = S_0$
+            \item For each time step $n = 1$ to $N$:
+                \begin{enumerate}
+                    \item Generate $Z \sim N(0,1)$
+                    \item Compute $S_n^m = S_{n-1}^m \exp\left((r - \frac{1}{2}\sigma^2)\Delta t + \sigma \sqrt{\Delta t} Z\right)$
+                \end{enumerate}
+            \item Calculate the payoff $P^m$ for the specific option being priced
+        \end{enumerate}
+    \item Estimate the option price as the discounted average of the payoffs:
+        \begin{equation}
+            \text{Price} = e^{-rT} \frac{1}{M} \sum_{m=1}^M P^m
+        \end{equation}
+\end{enumerate}
+
+This method converges to the true option price as $M \to \infty$ and $\Delta t \to 0$, as demonstrated by Boyle (1977) \cite{Boyle1977}. The use of the exact solution in the simulation reduces the discretization error compared to the Euler-Maruyama method, potentially allowing for larger time steps and improved efficiency.
+
+To enhance the efficiency and accuracy of our Monte Carlo simulations, we implement several variance reduction techniques:
+
+\begin{itemize}
+    \item \textbf{Antithetic Variates}: We generate pairs of simulations using $Z$ and $-Z$, which reduces variance and improves convergence.
+    
+    \item \textbf{Control Variates}: We use the analytical Black-Scholes price of a vanilla option as a control variate for pricing more complex options, leveraging the correlation between the simple and complex option prices.
+    
+\end{itemize}
+
+Our Monte Carlo implementation is flexible and can handle a wide range of option types, including:
+
+\begin{itemize}
+    \item Path-dependent options (e.g., Asian options, lookback options)
+    \item Barrier options
+    \item Basket options on multiple underlying assets
+\end{itemize}
+
+Furthermore, our Monte Carlo framework allows for the incorporation of more complex asset price dynamics, such as stochastic volatility or jump-diffusion processes, making it a versatile tool for pricing and risk management in commodity markets where such features may be prevalent.
+
+The use of the exponential form in our price evolution ensures that our simulated prices are always positive and follow a log-normal distribution, which is consistent with the theoretical assumptions of many financial models. This approach provides a more accurate representation of asset price behavior, especially when dealing with longer time horizons or higher volatilities.
+
+\subsubsection{Greeks Calculation}
+
+The Greeks are crucial for risk management. We implement analytical formulas for the first-order Greeks:
+
+\paragraph{Delta}
+For a call option:
+\begin{equation}
+    \Delta_c = e^{-rT} N(d_1)
+\end{equation}
+
+\paragraph{Gamma}
+For both call and put options:
+\begin{equation}
+    \Gamma = e^{-rT} \frac{N'(d_1)}{S_0\sigma\sqrt{T}}
+\end{equation}
+
+\paragraph{Vega}
+For both call and put options:
+\begin{equation}
+    \nu = e^{-rT} S_0\sqrt{T}N'(d_1)
+\end{equation}
+
+\paragraph{Theta}
+For a call option:
+\begin{equation}
+    \Theta_c = S_0 e^{-rT} r N(d_1) -e^{-rT}\frac{S_0N'(d_1)\sigma}{2\sqrt{T}} - rKe^{-rT}N(d_2)
+\end{equation}
+
+\paragraph{Rho}
+For a call option:
+\begin{equation}
+    \rho_c = KTe^{-rT}N(d_2)
+\end{equation}
+
+\subsubsection{Implied Volatility Calculation}
+
+We use the Newton-Raphson method to calculate implied volatility. Given a market price $C_m$, we iteratively solve:
+
+\begin{equation}
+    \sigma_{n+1} = \sigma_n - \frac{C(\sigma_n) - C_m}{\nu(\sigma_n)}
+\end{equation}
+
+Where $C(\sigma_n)$ is the Black-Scholes price and $\nu(\sigma_n)$ is the Vega, both calculated using the current estimate of volatility $\sigma_n$.
+
+\subsubsection{Hedging Strategies}
+
+\paragraph{Put Option Strategy}
+
+The put option strategy involves buying put options to protect against downside risk. The payoff at expiration is:
+
+\begin{equation}
+    \text{Payoff} = \max(K - S_T, 0)
+\end{equation}
+
+Where $K$ is the strike price and $S_T$ is the price of the underlying at expiration.
+
+\paragraph{Collar Strategy}
+
+The collar strategy involves buying a put option and selling a call option. The net payoff at expiration is:
+
+\begin{equation}
+    \text{Payoff} = \min(\max(S_T, K_p), K_c) - S_0
+\end{equation}
+Where $K_p$ is the put strike and $K_c$ is the call strike.
+
+\subsection{Testing Platform}
+
+Our testing platform is designed to ensure the accuracy and reliability of the pricing and risk management library. It consists of the following components:
+
+\begin{itemize}
+    \item Unit Tests: For individual functions and methods
+    \item Integration Tests: To verify the interaction between different components
+    \item Benchmark Tests: To compare our results with known analytical solutions or market data
+    \item Stress Tests: To evaluate performance under extreme market conditions
+\end{itemize}
+
+We use JUnit for Java components and Jest for React components. For example, a unit test for the Black-Scholes pricing function might look like this:
+
+\begin{verbatim}
+@Test
+public void testBlackScholesPricing() {
+    double S = 100.0;
+    double K = 100.0;
+    double T = 1.0;
+    double r = 0.05;
+    double sigma = 0.2;
+    double expectedPrice = 10.45;
+    double calculatedPrice = BlackScholes.call(S, K, T, r, sigma);
+    assertEquals(expectedPrice, calculatedPrice, 0.01);
+}
+\end{verbatim}
+
+\subsection{Evaluation Metrics}
+
+To evaluate the effectiveness of our solution, we employ several metrics:
+
+\begin{itemize}
+    \item Pricing Accuracy: Measured by comparing our model prices with market prices or known analytical solutions.
+    \item Computational Efficiency: Measured by the time taken to price options and calculate risk metrics.
+    \item Hedging Effectiveness: Evaluated by the reduction in portfolio variance achieved by our hedging strategies.
+\end{itemize}
+
+\subsubsection{Pricing Accuracy}
+
+To evaluate the accuracy of our pricing models, we compare our calculated prices with market prices or benchmark prices. We use a relative error metric, which is calculated as follows:
+
+\begin{equation}
+    \text{Relative Error} = \frac{\text{Market Price} - \text{Model Price}}{\text{Market Price}} \times 10000 \text{ bps}
+\end{equation}
+
+Where bps stands for basis points (1 bps = 0.01\%).
+
+This metric provides a normalized measure of the pricing error, allowing for comparison across different price levels. We aim for a relative error in the range of 1-5 bps, which is considered a good level of accuracy for most practical applications in commodity markets.
+
+The interpretation of this metric is as follows:
+
+\begin{itemize}
+    \item A positive error indicates that our model is underpricing compared to the market.
+    \item A negative error indicates that our model is overpricing compared to the market.
+    \item The magnitude of the error (in bps) gives a quick indication of the pricing accuracy.
+\end{itemize}
+
+For example, if the market price of an option is \$10.00 and our model prices it at \$9.95, the relative error would be:
+
+\begin{equation}
+    \text{Relative Error} = \frac{10.00 - 9.95}{10.00} \times 10000 = 50 \text{ bps}
+\end{equation}
+
+This would indicate that our model is underpricing the option by 50 bps compared to the market price.
+
+In our implementation, we calculate this relative error for a range of options with different strikes and maturities. We then analyze the distribution of these errors to assess the overall performance of our pricing models. Key statistics we consider include:
+
+\begin{itemize}
+    \item Mean absolute error: to gauge overall accuracy
+    \item Standard deviation of errors: to assess consistency
+    \item Maximum and minimum errors: to identify potential outliers or specific conditions where the model may be less accurate
+\end{itemize}
+
+We consider our pricing models to be performing well if:
+
+\begin{itemize}
+    \item The mean absolute error is consistently within the 1-5 bps range
+    \item The standard deviation of errors is low, indicating consistent performance across different option parameters
+    \item Maximum errors are rarely above 20-30 bps, with any larger deviations being explainable by specific market conditions
+\end{itemize}
+
+This approach to measuring pricing accuracy allows us to continuously monitor and improve our pricing models, ensuring that they remain reliable and accurate for use in real-world commodity hedging applications.
+
+\subsubsection{Hedging Effectiveness}
+
+To evaluate the effectiveness of our hedging strategies, we use two key metrics: Profit and Loss (PnL) and Cost Reduction Ratio.
+
+\paragraph{Profit and Loss (PnL)}
+
+The PnL metric quantifies the absolute benefit of the hedging strategy in monetary terms. It is calculated as:
+
+\begin{equation}
+    \text{PnL} = \text{Total Cost Without Hedging} - \text{Total Cost With Hedging}
+\end{equation}
+
+A positive PnL indicates that the hedging strategy has reduced the overall cost compared to the unhedged position.
+
+\paragraph{Cost Reduction Ratio}
+
+The Cost Reduction Ratio expresses the PnL as a percentage of the total cost without hedging, providing a relative measure of the hedging strategy's effectiveness:
+
+\begin{equation}
+    \text{Cost Reduction Ratio} = \frac{\text{PnL}}{\text{Total Cost Without Hedging}} \times 100\%
+\end{equation}
+
+This ratio allows for easier comparison between different hedging strategies or across different time periods. A higher percentage indicates a more effective hedging strategy.
+
+In our implementation, these metrics are calculated as follows:
+
+\begin{enumerate}
+    \item Calculate the total cost without hedging, which is typically the spot price of the commodity multiplied by the volume.
+    \item Calculate the total cost with hedging, which includes the cost of the hedging instruments (e.g., option premiums) and the final price paid for the commodity after accounting for the payoff of the hedging instruments.
+    \item Compute the PnL by subtracting the hedged cost from the unhedged cost.
+    \item Calculate the Cost Reduction Ratio by dividing the PnL by the unhedged cost and expressing it as a percentage.
+\end{enumerate}
+
+For example, if a company needs to purchase 1,000 barrels of oil, and the unhedged cost would be \$50,000, but with hedging the total cost (including hedging instruments) is \$48,000, then:
+
+\begin{align*}
+    \text{PnL} &= \$50,000 - \$48,000 = \$2,000 \\
+    \text{Cost Reduction Ratio} &= \frac{\$2,000}{\$50,000} \times 100\% = 4\%
+\end{align*}
+
+This would indicate that the hedging strategy reduced costs by 4\% compared to the unhedged position.
+
+These metrics provide a clear and intuitive measure of hedging effectiveness, allowing users to easily assess the financial impact of their hedging strategies. They are particularly useful in the context of commodity hedging, where the primary goal is often to reduce the impact of price volatility on a company's costs or revenues.
+
+\section{Results and Analysis}
+
+\subsection{Achievement of Objectives}
+
+Our primary objectives were to develop a comprehensive pricing and risk management library for commodity hedging products and to evaluate the effectiveness of various hedging strategies. The results of our backtesting analysis and Monte Carlo simulations demonstrate significant progress towards these goals.
+
+\subsection{Evaluation Methods}
+
+\subsubsection{Backtesting}
+We conducted backtesting for the years 2018, 2019, 2020, and April 2020, under two different market conditions: 6\% backwardation and 6\% contango. Our evaluation focused on the cost reduction achieved by each hedging strategy compared to a no-hedging scenario.
+
+\subsubsection{Monte Carlo Simulations}
+We simulated various price scenarios ([30,60], [60,80], [80,120], >120) with associated probabilities (43\%, 27\%, 22\%, 5\% respectively). We evaluated strategies with coverage ratios ranging from 0\% to 100\%, comparing their performance against a 100\% spot strategy.
+
+\subsection{Results}
+
+\subsubsection{Backtesting Results}
+
+\begin{table}[h]
+\centering
+\caption{Hedging Effectiveness: Cost Reduction (\% of cost without hedging)}
+\label{tab:hedging_effectiveness}
+\begin{tabular}{llllrrrr}
+\hline
+Average Monthly & Strategy & Strategy & \multicolumn{4}{c}{Cost Reduction (\%)} \\
+Forward Profile & & Detail & 2018 & 2019 & 2020 & 2020/April \\
+\hline
+& 65\% put & long swap / short 65\% put & 5\% & 13\% & -28\% & -3\% \\
+& 100\% put & long swap / short 100\% put & 4\% & 13\% & -17\% & -5\% \\
+6\% backwardation & swap only & long 100\% swap & 11\% & 19\% & -61\% & -1\% \\
+& collar & 10\% collar & 18\% & 37\% & -123\% & -3\% \\
+\hline
+& 65\% put & long swap / short 65\% put & 1\% & 8\% & -33\% & -6\% \\
+& 100\% put & long swap / short 100\% put & 0\% & 8\% & -19\% & -8\% \\
+6\% contango & swap only & long 100\% swap & 5\% & 14\% & -71\% & -8\% \\
+& collar & 10\% collar & 7\% & 22\% & -129\% & -17\% \\
+\hline
+\end{tabular}
+\end{table}
+\newpage
+\subsubsection{Simulation Results}
+
+\begin{table}[h]
+\centering
+\caption{Simulation Results: Bunker Cost and Difference from 100\% Spot}
+\label{tab:simulation_results}
+\begin{tabular}{lcccccc}
+\hline
+Strategy & Coverage & Cost & \multicolumn{4}{c}{Difference from 100\% Spot (M\$)} \\
+ & Ratio & (M\$) & [30,60] & [60,80] & [80,120] & \geq 120 \\
+\hline
+All Spot & 0\% & 132-380 & - & - & - & - \\
+Swap 2021/Swap 2022 & 25\% & 0 & -18.7 & -0.4 & 21.5 & 43.4 \\
+Spot 2021/Swaption 2022 & 25\% & 3 & -2.7 & -2.7 & 18.2 & 40.1 \\
+Swap 2021/Swaption 2022 & 25\% & 3 & -10.4 & -3.1 & 18.2 & 40.1 \\
+Call Option & 25\% & 5 & -5.2 & -5.2 & 15.7 & 37.6 \\
+\hline
+Swap 2021/Swap 2022 & 50\% & 0 & -37.4 & -0.8 & 43.0 & 86.9 \\
+Spot 2021/Swaption 2022 & 50\% & 5 & -5.4 & -5.4 & 36.4 & 80.2 \\
+Swap 2021/Swaption 2022 & 50\% & 5 & -20.8 & -6.2 & 36.4 & 80.2 \\
+Call Option & 50\% & 10 & -10.4 & -10.4 & 31.3 & 75.2 \\
+\hline
+Swap 2021/Swap 2022 & 75\% & 0 & -56.0 & -1.2 & 64.5 & 130.3 \\
+Spot 2021/Swaption 2022 & 75\% & 8 & -8.1 & -8.1 & 54.5 & 120.3 \\
+Swap 2021/Swaption 2022 & 75\% & 8 & -31.3 & -9.4 & 54.5 & 120.3 \\
+Call Option & 75\% & 16 & -15.7 & -15.7 & 47.0 & 112.8 \\
+\hline
+Swap 2021/Swap 2022 & 100\% & 0 & -74.7 & -1.7 & 86.1 & 173.8 \\
+Spot 2021/Swaption 2022 & 100\% & 11 & -10.8 & -10.8 & 72.7 & 160.4 \\
+Swap 2021/Swaption 2022 & 100\% & 11 & -34.0 & -12.1 & 51.8 & 160.4 \\
+Call Option & 100\% & 21 & -20.9 & -20.9 & 62.6 & 150.3 \\
+\hline
+\end{tabular}
+\end{table}
+\subsection{Critical Analysis of Results}
+
+\subsubsection{Backtesting Insights}
+
+\paragraph{Performance Variability Across Years}
+\begin{itemize}
+    \item 2018-2019: All strategies showed positive cost reduction, indicating effective hedging.
+    \item 2020: Strategies resulted in negative cost reduction, suggesting potential losses compared to no hedging.
+    \item 2020/April: Continued negative performance, albeit less severe than the full year 2020.
+\end{itemize}
+
+\paragraph{Impact of Market Structure}
+\begin{itemize}
+    \item Backwardation: Generally led to better hedging performance across all strategies.
+    \item Contango: Resulted in slightly lower cost reductions, particularly evident in 2018 and 2019.
+\end{itemize}
+
+\paragraph{Strategy Comparison}
+\begin{itemize}
+    \item Collar strategy: Showed the highest potential for cost reduction in favorable years but also the highest potential for losses in unfavorable conditions.
+    \item Swap only: Demonstrated more moderate performance, with less extreme gains and losses.
+    \item Put options: The 65\% put and 100\% put strategies showed similar performance, with slightly better results for the 65\% put in most scenarios.
+\end{itemize}
+
+\paragraph{2020 Anomaly}
+The universally negative performance in 2020 likely reflects the extreme market volatility due to the COVID-19 pandemic, highlighting the limitations of historical backtesting in predicting performance during unprecedented events.
+
+\subsubsection{Simulation Insights}
+
+\paragraph{Impact of Coverage Ratio}
+\begin{itemize}
+    \item Higher coverage ratios increase both potential cost savings and losses.
+    \item Higher coverage provides better protection against price increases but limits benefits from price decreases.
+\end{itemize}
+
+\paragraph{Strategy Comparison}
+\begin{itemize}
+    \item Swap strategies: Highest potential for savings in high-price scenarios, but also highest potential losses in low-price scenarios.
+    \item Swaption strategies: More balanced approach, with lower potential losses in low-price scenarios but also lower savings in high-price scenarios.
+    \item Call options: Lowest potential losses in low-price scenarios while still offering significant savings in high-price scenarios.
+\end{itemize}
+
+\paragraph{Cost of Strategies}
+\begin{itemize}
+    \item Swap strategies: Typically no upfront cost but less flexibility.
+    \item Swaption and call option strategies: Have an associated cost, increasing with coverage ratio.
+    \item Strategy cost needs to be weighed against potential benefits and risk tolerance.
+\end{itemize}
+
+\paragraph{Performance in Different Price Scenarios}
+\begin{itemize}
+    \item Lowest price scenario [30,60]: All hedging strategies result in losses compared to spot strategy.
+    \item Highest price scenario ($\geq$ 120): All hedging strategies provide significant savings.
+    \item $[60,80]$ scenario: Minimal differences between hedging strategies and spot strategy, suggesting this might be close to the expected price range used in strategy pricing.
+\end{itemize}
+
+\subsection{Synthesis of Backtesting and Simulation Results}
+
+\begin{enumerate}
+    \item Both sets of results highlight the trade-off between risk mitigation and potential gains/losses.
+    \item Simulation results provide a more nuanced view of strategy performance across different price scenarios, complementing the historical perspective offered by backtesting.
+    \item The variability in both sets of results emphasizes the importance of considering multiple factors in hedging decisions, including market outlook, risk tolerance, and strategy costs.
+    \item The 2020 backtesting results and the simulation results for extreme price scenarios underscore the importance of stress testing and scenario analysis in risk management.
+    \item The performance differences between market structures (backwardation vs. contango) in backtesting align with the varying effectiveness of strategies across price ranges in the simulations.
+\end{enumerate}
+
+\subsection{Achievement of Objectives}
+
+\begin{enumerate}
+    \item We successfully implemented and tested multiple hedging strategies using both historical data and Monte Carlo simulations, meeting our primary objective.
+    \item The library demonstrated its capability to quantify hedging effectiveness under various market conditions and price scenarios.
+    \item The comprehensive results provide valuable insights for decision-making, allowing users to balance risk mitigation with cost considerations.
+    \item The project highlights the complexity of commodity markets and the challenges in developing universally effective hedging strategies, contributing to a more nuanced understanding of risk management in these markets.
+    \item The combination of backtesting and simulation analyses provides a robust framework for evaluating hedging strategies, enhancing the library's utility for real-world applications.
+\end{enumerate}
+
+This analysis underscores the importance of a flexible and comprehensive approach to commodity hedging, where strategies can be dynamically adjusted based on market conditions, risk tolerance, and specific organizational needs.
+
+\section{Personal Assessment of the Internship}
+
+\subsection{Major obstacles and challenges}
+
+\begin{itemize}
+    \item \textbf{Implementing complex financial models:} Developing accurate and efficient implementations of various pricing models (Black-Scholes, Monte Carlo simulations) and hedging strategies required deep understanding of both financial theory and programming techniques.
+    \item \textbf{Data management and integration:} Obtaining reliable market data and integrating it seamlessly into the library posed significant challenges, especially given the diverse nature of commodity markets.
+    \item \textbf{Balancing performance and flexibility:} Ensuring the library could handle real-time calculations while remaining adaptable to different commodities and market conditions was a constant challenge.
+\end{itemize}
+
+\subsection{Methods used to overcome them}
+
+\begin{itemize}
+    \item \textbf{Extensive research and continuous learning:} I dedicated time to studying advanced financial concepts and best practices in software development for quantitative finance.
+    \item \textbf{Iterative development and testing:} I adopted an incremental approach, implementing core functionalities first and gradually adding more complex features, with rigorous testing at each stage.
+    \item \textbf{Collaboration and mentorship:} Regular discussions with my supervisors and colleagues at Quanteam helped me navigate complex issues and refine my approach.
+\end{itemize}
+
+\subsection{Interpersonal skills acquired in the company}
+
+\begin{itemize}
+    \item \textbf{Communication:} I improved my ability to explain complex technical concepts to both technical and non-technical stakeholders.
+    \item \textbf{Teamwork:} Collaborating with colleagues from different backgrounds enhanced my ability to work effectively in a professional environment.
+    \item \textbf{Time management:} Balancing multiple tasks and meeting deadlines in a fast-paced financial technology setting honed my organizational skills.
+    \item \textbf{Adaptability:} Working on a project with evolving requirements taught me to be flexible and quick to learn new concepts and technologies.
+\end{itemize}
+
+\section{Conclusion}
+
+\subsection{Answers to the questions posed in the introduction}
+
+\begin{enumerate}
+    \item We successfully developed a comprehensive library for pricing and risk management of commodity hedging products, addressing the need for sophisticated tools in volatile commodity markets.
+    \item The library effectively integrates various pricing models, hedging strategies, and risk assessment tools, providing a flexible solution for different commodities and market conditions.
+    \item Through backtesting and Monte Carlo simulations, we demonstrated the library's capability to evaluate hedging strategies under various market scenarios, providing valuable insights for risk management decisions.
+\end{enumerate}
+
+\subsection{Summary of the main results}
+
+\begin{itemize}
+    \item Successful implementation of multiple pricing models including Black-Scholes and Monte Carlo simulations, with high accuracy compared to market prices.
+    \item Development of flexible hedging strategy modules, including put options, call options, collars, and swaps.
+    \item Creation of robust backtesting and simulation tools that provide detailed insights into strategy performance across different market conditions.
+    \item Integration of real-time market data and development of user-friendly interfaces for strategy configuration and result visualization.
+    \item Comprehensive evaluation of hedging effectiveness, revealing the trade-offs between risk mitigation and potential gains/losses across different strategies and market scenarios.
+\end{itemize}
+
+\subsection{Future perspectives}
+
+\begin{itemize}
+    \item \textbf{Machine Learning Integration:} Explore the potential of machine learning algorithms for more accurate price prediction and optimal hedging strategy selection.
+    \item \textbf{Expansion to Additional Asset Classes:} Extend the library's capabilities to cover a wider range of financial instruments, potentially including forex markets.
+    \item \textbf{Enhanced Real-time Capabilities:} Further optimize the library for real-time performance, enabling more dynamic hedging adjustments.
+    \item \textbf{Cloud-based Deployment:} Investigate cloud deployment options to improve scalability and accessibility for users across different locations.
+    \item \textbf{Regulatory Compliance Features:} Develop additional modules to ensure compliance with evolving financial regulations in different markets.
+    \item \textbf{User Customization:} Implement features allowing users to define custom payoff structures and hedging strategies, increasing the library's flexibility.
+\end{itemize}
+
+This internship has provided invaluable experience in applying theoretical knowledge to real-world financial challenges. The project not only met its objectives but also laid a foundation for future developments in commodity risk management tools. The skills and insights gained during this experience will be instrumental in my future career in quantitative finance and financial technology.
+
+\begin{thebibliography}{9}
+
+\bibitem{Harrison1979}
+Harrison, J. M., & Kreps, D. M. (1979).
+\textit{Martingales and arbitrage in multiperiod securities markets}.
+Journal of Economic Theory, 20(3), 381-408.
+
+\bibitem{Cox1976}
+Cox, J. C., & Ross, S. A. (1976).
+\textit{The valuation of options for alternative stochastic processes}.
+Journal of Financial Economics, 3(1-2), 145-166.
+
+\bibitem{Boyle1977}
+Boyle, P. P. (1977).
+\textit{Options: A Monte Carlo approach}.
+Journal of Financial Economics, 4(3), 323-338.
+\end{thebibliography}
+\end{document}
+
